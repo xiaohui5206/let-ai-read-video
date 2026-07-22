@@ -7,13 +7,13 @@
 
 ## 一、GitHub「About」简介（直接粘贴用 / Ready to paste）
 
-> GitHub About 栏上限 350 字符，不支持 Markdown。以下主版本双语共 ~330 字符，可直接粘贴。
+> GitHub About 栏上限 350 字符，不支持 Markdown。以下主版本双语共约 330 字符，可直接粘贴。
 
 **主推版（中英双语）/ Main version (bilingual)：**
 
 ```
-让任何 AI 真正"看"视频：纯本地的视频阅读 skill——faster-whisper GPU 转写 + ffmpeg 场景感知抽帧，双通道带时间戳（t=MM:SS），数据不出机。1 小时视频 3~5 分钟读完。
-Give any AI agent eyes for video: a 100% local video-reading skill — faster-whisper GPU transcription + scene-aware ffmpeg frame extraction, dual-channel with t=MM:SS citations. Nothing leaves your machine. A 1-hour video in 3~5 min.
+让任何 AI 真正"看"视频：纯本地的视频阅读 skill——faster-whisper GPU 转写 + ffmpeg 场景感知抽帧，双通道带时间戳（t=MM:SS），数据不出机。1 小时视频 3～5 分钟读完。
+Give any AI agent eyes for video: a 100% local video-reading skill — faster-whisper GPU transcription + scene-aware ffmpeg frame extraction, dual-channel with t=MM:SS citations. Nothing leaves your machine. A 1-hour video in 3–5 min.
 ```
 
 **纯英文版（国际流量）/ English-only：**
@@ -25,7 +25,7 @@ Give any AI agent eyes for video 👁️ 100% local video-reading skill: faster-
 **纯中文版 / Chinese-only：**
 
 ```
-让任何 AI 真正"看"视频 👁️ 纯本地视频阅读 skill：faster-whisper GPU 转写 + ffmpeg 场景感知抽帧，双通道融合、全程带 t=MM:SS 时间戳。不调云端 API，数据不出机。游戏本上 1 小时视频 3~5 分钟读完。任何能跑命令行、能看图的 Agent 拿到 SKILL.md 即可上手。
+让任何 AI 真正"看"视频 👁️ 纯本地视频阅读 skill：faster-whisper GPU 转写 + ffmpeg 场景感知抽帧，双通道融合、全程带 t=MM:SS 时间戳。不调云端 API，数据不出机。游戏本上 1 小时视频 3～5 分钟读完。任何能跑命令行、能看图的 Agent 拿到 SKILL.md 即可上手。
 ```
 
 ## 二、Topics 标签（GitHub 仓库标签 / Repo topics）
@@ -49,7 +49,7 @@ agent-tools, multimodal, privacy-first
 - 🎬 **双通道理解**——faster-whisper 在本机 GPU 上做语音转写，ffmpeg 按场景切换 + 均匀采样智能抽帧，"听到的"和"看到的"互相印证
 - ⏱️ **全程带时间戳**——AI 的每句回答都能落到 `t=MM:SS`，点回去就是原片位置
 - 🔒 **数据不出机**——不调用任何云端视觉/语音 API，隐私视频、内部会议放心喂
-- ⚡ **游戏本就够快**——RTX 4060 实测：11 分钟视频全管线 40 秒，1 小时视频 3~5 分钟
+- ⚡ **游戏本就够快**——RTX 4060 实测：11 分钟视频全管线 40 秒，1 小时视频 3～5 分钟
 - 🧩 **AI 无关**——Kimi、Claude Code、Codex……任何能跑命令行、能看图的 Agent，读一遍 `SKILL.md` 就会用
 - 📺 **B站特化**——直接读取本机客户端缓存，免下载、纯离线
 

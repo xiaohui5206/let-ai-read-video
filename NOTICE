@@ -1,0 +1,28 @@
+# 致谢与来源说明 / Acknowledgements
+
+video-watch 的**全部代码均为原创编写**，未复制任何第三方项目的源码。
+在设计上参考过以下公开项目/服务的思路（仅思路层面，特此致谢）：
+
+1. **claude-video**（https://github.com/bradautomates/claude-video，MIT License）
+   - 参考点：视频阅读 skill 的整体形态、"按时长自适应分配抽帧预算"的设计思想。
+   - 说明：本项目未使用其任何代码；帧预算档位、脚本结构、转写与缓存通路均为独立实现。
+
+2. **iTingnao（听脑）云服务**（https://itingnao.com）
+   - 参考点："异步任务 + 轮询"的产品形态分析，印证了本地 GPU 方案的加速方向。
+   - 说明：本项目与其无任何代码或数据关系，为纯本地实现。
+
+## 第三方组件
+
+本项目运行依赖以下独立第三方组件，各自适用其原始许可证：
+
+- **ffmpeg / ffprobe**（https://ffmpeg.org，LGPL/GPL）— 本仓库不分发其二进制文件，
+  由 `scripts/setup.py` 在用户首次运行时从官方发布渠道下载。
+- **yt-dlp**（https://github.com/yt-dlp/yt-dlp，Unlicense）— 同上，不分发二进制。
+- **faster-whisper**（https://github.com/SYSTRAN/faster-whisper，MIT License）。
+- **Whisper 模型权重**（OpenAI Whisper，MIT License；经 Hugging Face 分发，
+  首次转写时自动下载）。
+
+## 免责声明
+
+- 请确保你对所处理的视频内容拥有合法使用权；本项目仅提供本地技术工具，
+  使用方式与后果由使用者自行承担。

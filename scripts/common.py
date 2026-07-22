@@ -18,6 +18,15 @@
 3. 时间参数用 parse_time() 解析（秒 / MM:SS / HH:MM:SS），
    展示用 fmt_ts()（MM:SS，满 1 小时用 HH:MM:SS）。
 4. 仅 Python 3.12 stdlib；本模块不 import 任何第三方包。
+
+设计说明（一次性解释各脚本头部的重复兜底块）：
+每个 CLI 脚本头部都内嵌了一份本模块的"最小兜底实现"（约 40 行，
+导入 common 失败时启用）。这是**有意为之的取舍**而非疏漏：
+skill 会以整个文件夹的形式被拷贝到各种 AI Agent 的运行环境中，
+任一脚本都可能被单独抽取出来执行；内嵌兜底可保证脚本在
+common.py 缺失或被单独拷贝时仍可独立运行。兜底实现只覆盖冻结契约
+（log/die/find_tool/parse_time/fmt_ts/RESULT_JSON），契约不变则无需
+与各脚本同步；新增功能请只加在本模块中。
 """
 from __future__ import annotations
 

@@ -228,7 +228,6 @@ def main() -> None:
             fail("--budget 必须是 auto 或整数")
 
     # ---- 变量初始化 --------------------------------------------------------
-    bili_fast = False
     kind = "file"
     title = None
     duration = None
@@ -286,7 +285,7 @@ def main() -> None:
                     }
                     transcript_txt = tr.get("txt")
 
-    if not bili_fast and not cache_mode:
+    if not cache_mode:
         # ---- 1/4 probe：探测输入 -------------------------------------------
         probe = run_step("probe.py", ["--input", args.input], "1/4 探测输入 (probe)")
         kind = probe.get("kind")                      # "url" | "file"

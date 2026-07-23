@@ -25,6 +25,7 @@ ASR 引擎：
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -43,8 +44,8 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    # 冻结契约：ffmpeg 查找与时间戳显示统一走 common
-    from common import find_tool, fmt_ts  # type: ignore
+    # ffmpeg 查找与时间戳显示统一走 common
+    from common import find_tool, fmt_ts, parse_time  # type: ignore
 except ImportError:  # pragma: no cover - common 尚未就绪时的最小回退，语义与契约一致
     def find_tool(name):
         """工具查找顺序：<SKILL>/tools/<name>.exe → PATH。"""
@@ -60,6 +61,27 @@ except ImportError:  # pragma: no cover - common 尚未就绪时的最小回退�
         h, rem = divmod(t, 3600)
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+    def parse_time(value):
+        """解析秒数、MM:SS 或 HH:MM:SS。"""
+        if isinstance(value, (int, float)):
+            result = float(value)
+        else:
+            text = str(value).strip()
+            if not text:
+                raise ValueError("时间字符串为空")
+            parts = text.split(":")
+            if len(parts) == 1:
+                result = float(parts[0])
+            elif len(parts) == 2:
+                result = float(parts[0]) * 60 + float(parts[1])
+            elif len(parts) == 3:
+                result = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+            else:
+                raise ValueError(f"无法解析时间: {value!r}")
+        if result < 0:
+            raise ValueError(f"时间不能为负: {value}")
+        return result
 
 
 class Die(Exception):
@@ -183,21 +205,112 @@ def dedup_cues(cues):
 # 音频抽取与 ASR
 # ---------------------------------------------------------------------------
 
-def extract_audio(video, out_dir):
-    """ffmpeg 抽取 16kHz 单声道 wav 到 out_dir/audio.wav。"""
+def parse_window(start_value=None, end_value=None):
+    """解析并校验可选时间窗，返回 ``(start, end, requested)``。
+
+    start 在只给 end 时按 0 处理；未提供任何窗口参数时 start/end 都返回 None，
+    让旧调用路径保持完整媒体处理行为。
+    """
+    requested = start_value is not None or end_value is not None
+    if not requested:
+        return None, None, False
+    start = parse_time(start_value) if start_value is not None else 0.0
+    end = parse_time(end_value) if end_value is not None else None
+    if end is not None and end <= start:
+        die(f"--end ({end:g}) 必须大于 --start ({start:g})")
+    return float(start), float(end) if end is not None else None, True
+
+
+def build_audio_extract_command(ffmpeg, media, wav, start=None, end=None):
+    """构造媒体转 16kHz 单声道 WAV 的 ffmpeg 参数列表。"""
+    cmd = [str(ffmpeg), "-y"]
+    if start is not None:
+        cmd += ["-ss", f"{float(start):.3f}"]
+    cmd += ["-i", str(media)]
+    if end is not None:
+        begin = float(start or 0.0)
+        cmd += ["-t", f"{float(end) - begin:.3f}"]
+    cmd += ["-vn", "-ac", "1", "-ar", "16000", str(wav)]
+    return cmd
+
+
+def extract_audio(video, out_dir, start=None, end=None):
+    """ffmpeg 抽取可选窗口为 16kHz 单声道 wav 到 out_dir/audio.wav。"""
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
         die("未找到 ffmpeg：请先运行 `python scripts/setup.py --install`，"
             "或将 ffmpeg.exe 放入 <skill>/tools/ 或加入 PATH")
     wav = out_dir / "audio.wav"
-    cmd = [ffmpeg, "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(wav)]
-    log(f"抽取音频: ffmpeg -i <video> -vn -ac 1 -ar 16000 {wav.name}")
+    cmd = build_audio_extract_command(ffmpeg, video, wav, start, end)
+    if start is None and end is None:
+        window_desc = "完整媒体"
+    else:
+        window_desc = f"{start or 0.0:.3f}s–{end:.3f}s" if end is not None else f"{start or 0.0:.3f}s–结尾"
+    log(f"抽取音频（{window_desc}）: {wav.name}")
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     if proc.returncode != 0 or not wav.is_file():
         tail = (proc.stderr or "")[-800:].strip()
         die(f"ffmpeg 抽取音频失败（退出码 {proc.returncode}）: {tail}")
     return wav
+
+
+_ASR_CONFIDENCE_FIELDS = (
+    "avg_logprob",
+    "no_speech_prob",
+    "compression_ratio",
+    "temperature",
+)
+
+
+def _finite_float(value):
+    """有限数值转 float；缺失、非法、NaN 与无穷返回 None。"""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def asr_confidence_fields(segment):
+    """从 faster-whisper segment 读取可用的置信度诊断字段。"""
+    fields = {}
+    for name in _ASR_CONFIDENCE_FIELDS:
+        value = _finite_float(getattr(segment, name, None))
+        if value is not None:
+            fields[name] = value
+    avg_logprob = fields.get("avg_logprob")
+    if avg_logprob is not None:
+        # avg_logprob 是自然对数域分数；派生值仅用于排序/阈值提示，原值仍完整保留。
+        fields["confidence"] = min(1.0, max(0.0, math.exp(avg_logprob)))
+    return fields
+
+
+def offset_segments(segs, offset):
+    """把局部音频时间轴平移回源媒体时间轴，并保留附加元数据。"""
+    delta = float(offset or 0.0)
+    if delta == 0.0:
+        return [dict(s) for s in segs]
+    # 源偏移可能产生微负时间戳（如 B 站缓存 audio_minus_video_start=-0.023），
+    # 钳到 >=0，使 transcript.json 与 txt/srt 的显示语义保持一致。
+    return [
+        {
+            **s,
+            "start": max(0.0, float(s["start"]) + delta),
+            "end": max(0.0, float(s["end"]) + delta),
+        }
+        for s in segs
+    ]
+
+
+def filter_segments_by_window(segs, start=None, end=None):
+    """保留与源媒体时间窗有交集的 segment，不改写原始时间戳。"""
+    lower = float(start or 0.0)
+    upper = float(end) if end is not None else None
+    return [
+        dict(s) for s in segs
+        if float(s["end"]) > lower and (upper is None or float(s["start"]) < upper)
+    ]
 
 
 _DLL_DIR_COOKIES = []  # 必须存活到进程结束，否则目录会被移出 DLL 搜索路径
@@ -272,7 +385,12 @@ def run_faster_whisper(audio_path, args):
         text = (s.text or "").strip()
         if not text:
             continue
-        segs.append({"start": float(s.start), "end": float(s.end), "text": text})
+        segs.append({
+            "start": float(s.start),
+            "end": float(s.end),
+            "text": text,
+            **asr_confidence_fields(s),
+        })
     detected = getattr(info, "language", None)
     effective_lang = lang or detected or "auto"
     log(f"转写完成：{len(segs)} 个 segment，语言 {effective_lang}")
@@ -329,6 +447,20 @@ def _srt_ts(t):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def segment_json_record(segment):
+    """构造稳定的 transcript.json 记录，并保留可用 ASR 诊断字段。"""
+    record = {
+        "start": round(float(segment["start"]), 3),
+        "end": round(float(segment["end"]), 3),
+        "text": str(segment["text"]),
+    }
+    for name in (*_ASR_CONFIDENCE_FIELDS, "confidence"):
+        value = _finite_float(segment.get(name))
+        if value is not None:
+            record[name] = round(value, 6)
+    return record
+
+
 def write_outputs(segs, out_dir):
     """写 transcript.srt / transcript.txt / transcript.json，返回三路径。"""
     srt_path = out_dir / "transcript.srt"
@@ -349,8 +481,7 @@ def write_outputs(segs, out_dir):
 
     json_path.write_text(
         json.dumps(
-            [{"start": round(s["start"], 3), "end": round(s["end"], 3), "text": s["text"]}
-             for s in segs],
+            [segment_json_record(s) for s in segs],
             ensure_ascii=False, indent=1,
         ) + "\n",
         encoding="utf-8",
@@ -384,6 +515,16 @@ def parse_args(argv=None):
                    help="faster-whisper compute_type（缺省：GPU→float16，CPU→int8）")
     p.add_argument("--no-vad", action="store_true",
                    help="关闭 faster-whisper 的 VAD 过滤（默认开启 vad_filter）")
+    p.add_argument("--start", default=None,
+                   help="可选处理窗口起点：秒 / MM:SS / HH:MM:SS")
+    p.add_argument("--end", default=None,
+                   help="可选处理窗口终点：秒 / MM:SS / HH:MM:SS")
+    p.add_argument(
+        "--source-offset",
+        type=float,
+        default=0.0,
+        help="输入音频/字幕的 t=0 对应源视频的秒数（用于分离流时间轴对齐）",
+    )
     return p.parse_args(argv)
 
 
@@ -391,14 +532,45 @@ def main(argv=None):
     args = parse_args(argv)
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        window_start, window_end, window_requested = parse_window(args.start, args.end)
+    except ValueError as exc:
+        die(f"时间参数无效: {exc}")
+    if not math.isfinite(args.source_offset):
+        die("--source-offset 必须是有限数字")
+    source_offset = float(args.source_offset)
+    timeline_offset = source_offset
+    media_seek_start = None
+    media_seek_end = None
+    if window_requested:
+        # source_offset 定义 input-local t → source-video t。用户窗口使用源视频
+        # 坐标，因此抽取分离音频时要先做逆变换，再在 ASR 后平移回来。
+        requested_start = float(window_start or 0.0)
+        media_seek_start = max(0.0, requested_start - source_offset)
+        media_seek_end = (
+            None if window_end is None else float(window_end) - source_offset
+        )
+        if media_seek_end is not None and media_seek_end <= media_seek_start:
+            die("请求窗口与输入媒体时间轴没有有效交集")
+        timeline_offset = media_seek_start + source_offset
+    audio_path = None
 
     if args.vtt:
         # 路径 1：字幕文件 → 三件套
+        # 字幕 cue 本身已经位于输入时间轴，只做可选 source_offset 平移；
+        # --start/--end 在这里是过滤条件，不代表发生了媒体 seek。
+        timeline_offset = source_offset
+        media_seek_start = None
+        media_seek_end = None
         vtt_path = Path(args.vtt).resolve()
         if not vtt_path.is_file():
             die(f"字幕文件不存在: {vtt_path}")
         log(f"解析字幕文件: {vtt_path}")
         segs = dedup_cues(parse_caption_file(vtt_path))
+        if source_offset:
+            segs = offset_segments(segs, source_offset)
+        if window_requested:
+            segs = filter_segments_by_window(segs, window_start, window_end)
         engine, model_name = "captions", None
         device_used, compute_used = None, None
         language = None if args.language == "auto" else args.language
@@ -409,11 +581,25 @@ def main(argv=None):
             video_path = Path(args.video).resolve()
             if not video_path.is_file():
                 die(f"视频文件不存在: {video_path}")
-            audio_path = extract_audio(video_path, out_dir)
+            audio_path = extract_audio(
+                video_path,
+                out_dir,
+                media_seek_start if window_requested else None,
+                media_seek_end if window_requested else None,
+            )
         else:
-            audio_path = Path(args.audio).resolve()
-            if not audio_path.is_file():
-                die(f"音频文件不存在: {audio_path}")
+            source_audio_path = Path(args.audio).resolve()
+            if not source_audio_path.is_file():
+                die(f"音频文件不存在: {source_audio_path}")
+            if window_requested:
+                audio_path = extract_audio(
+                    source_audio_path,
+                    out_dir,
+                    media_seek_start,
+                    media_seek_end,
+                )
+            else:
+                audio_path = source_audio_path
 
         if args.engine == "sensevoice":
             segs, language = run_sensevoice(audio_path, args)
@@ -423,6 +609,10 @@ def main(argv=None):
             segs, language, device_used, compute_used = run_faster_whisper(audio_path, args)
             model_name = args.model
         engine = args.engine
+        if timeline_offset:
+            segs = offset_segments(segs, timeline_offset)
+        if window_requested:
+            segs = filter_segments_by_window(segs, window_start, window_end)
 
     srt_path, txt_path, json_path = write_outputs(segs, out_dir)
     result = {
@@ -436,6 +626,19 @@ def main(argv=None):
         "srt": str(srt_path),
         "txt": str(txt_path),
         "json": str(json_path),
+        "audio": str(audio_path) if audio_path is not None else None,
+        "window": {
+            "start": window_start if window_requested else None,
+            "end": window_end if window_requested else None,
+        },
+        "timeline": {
+            "unit": "seconds",
+            "origin": "source",
+            "offset": timeline_offset,
+            "source_offset": source_offset,
+            "media_seek_start": media_seek_start,
+            "media_seek_end": media_seek_end,
+        },
     }
     print("RESULT_JSON: " + json.dumps(result, ensure_ascii=False))
     return 0

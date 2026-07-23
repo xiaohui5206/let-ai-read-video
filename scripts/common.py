@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""video-watch skill 共享函数库（冻结契约 —— 修改需全体 worker 同步）。
+"""video-watch 共享函数库与 CLI 输出协议。
 
 各 scripts/*.py 通过以下方式导入（脚本在任意 cwd 下均可运行）::
 
@@ -17,15 +17,15 @@
    <SKILL>/tools/<name>.exe 优先，PATH 其次。
 3. 时间参数用 parse_time() 解析（秒 / MM:SS / HH:MM:SS），
    展示用 fmt_ts()（MM:SS，满 1 小时用 HH:MM:SS）。
-4. 仅 Python 3.12 stdlib；本模块不 import 任何第三方包。
+4. 仅 Python 3.10+ stdlib；本模块不 import 任何第三方包。
 
 设计说明（一次性解释各脚本头部的重复兜底块）：
 每个 CLI 脚本头部都内嵌了一份本模块的"最小兜底实现"（约 40 行，
 导入 common 失败时启用）。这是**有意为之的取舍**而非疏漏：
 skill 会以整个文件夹的形式被拷贝到各种 AI Agent 的运行环境中，
 任一脚本都可能被单独抽取出来执行；内嵌兜底可保证脚本在
-common.py 缺失或被单独拷贝时仍可独立运行。兜底实现只覆盖冻结契约
-（log/die/find_tool/parse_time/fmt_ts/RESULT_JSON），契约不变则无需
+common.py 缺失或被单独拷贝时仍可独立运行。兜底实现只覆盖公共接口
+（log/die/find_tool/parse_time/fmt_ts/RESULT_JSON），接口不变则无需
 与各脚本同步；新增功能请只加在本模块中。
 """
 from __future__ import annotations
@@ -39,10 +39,12 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import urlsplit, urlunsplit
 
 __all__ = [
     "skill_root", "tools_dir", "runs_dir", "find_tool", "run",
     "parse_time", "fmt_ts", "frame_budget", "slugify",
+    "redact_url", "redact_text_urls",
     "print_result", "die", "log", "setup_stdio", "now_stamp",
 ]
 
@@ -62,6 +64,36 @@ def tools_dir() -> Path:
 def runs_dir() -> Path:
     """运行产物根目录 <SKILL>/runs。只返回路径，不创建（由 watch.py 等按需创建）。"""
     return skill_root() / "runs"
+
+
+# ---------------------------------------------------------------- 隐私
+
+_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)
+
+
+def redact_url(value: str) -> str:
+    """移除 HTTP(S) URL 中的凭据、查询参数和片段，供日志与标题兜底使用。"""
+    raw = str(value)
+    try:
+        parts = urlsplit(raw)
+        if parts.scheme.lower() not in {"http", "https"}:
+            return raw
+        host = parts.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        netloc = f"{host}:{port}" if port is not None else host
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except Exception:
+        return "<redacted-url>" if raw.lower().startswith(("http://", "https://")) else raw
+
+
+def redact_text_urls(value: object) -> str:
+    """清理诊断文本中出现的所有 HTTP(S) URL。"""
+    return _HTTP_URL_RE.sub(lambda match: redact_url(match.group(0)), str(value))
 
 
 def find_tool(name: str) -> str | None:

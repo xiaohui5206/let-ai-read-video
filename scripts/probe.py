@@ -11,6 +11,8 @@ probe.py — 探测视频元数据（不下载视频内容）。
   * URL: 用 yt_dlp 仅取元数据（title/duration/width/height/fps/字幕列表）。
   * captions 合并手动字幕(subtitles)与自动字幕(automatic_captions)，手动优先标注；
     同一语言两种都有时只记 manual。
+  * URL 命中播放列表/多P 时: RESULT_JSON 增加 playlist={count, items[{index,title,duration}]}，
+    日志打印前 10 集清单（超出打 ...）；单视频与本地文件 playlist 为 null。
   * needs_transcribe = has_audio and not captions
   * suggested_budget 走 common.frame_budget（整片预算，无聚焦窗口）。
 
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -59,13 +62,19 @@ def fail(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 复用 common（冻结契约：find_tool / frame_budget）。common.py 缺失时启用
-# 与契约一致的最小兜底实现，保证 probe.py 仍可独立运行。
+# 优先复用 common 的工具查找与预算函数；common.py 缺失时启用最小兜底，
+# 保证 probe.py 被单独分发时仍可运行。
 # ---------------------------------------------------------------------------
 try:
     sys.path.insert(0, str(SCRIPTS_DIR))
-    from common import find_tool, frame_budget  # type: ignore
+    from common import (  # type: ignore
+        find_tool,
+        frame_budget,
+        redact_text_urls,
+        redact_url,
+    )
 except Exception:  # pragma: no cover - 兜底分支
+    from urllib.parse import urlsplit, urlunsplit
 
     def find_tool(name):
         """先 <SKILL>/tools/<name>.exe，再 PATH；找不到返回 None。"""
@@ -96,6 +105,26 @@ except Exception:  # pragma: no cover - 兜底分支
         if dur <= 600:
             return 80
         return 100
+
+    def redact_url(value):
+        try:
+            parts = urlsplit(str(value))
+            host = parts.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            port = parts.port
+            netloc = f"{host}:{port}" if port is not None else host
+            return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        except Exception:
+            return "<redacted-url>"
+
+    def redact_text_urls(value):
+        return re.sub(
+            r"https?://[^\s<>\"']+",
+            lambda match: redact_url(match.group(0)),
+            str(value),
+            flags=re.IGNORECASE,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +236,8 @@ def probe_file(path: Path) -> dict:
         # 设计决定：本地文件不提取内嵌字幕（transcribe.py 只接受外部 vtt/srt），
         # 因此本地文件 captions 恒为空，needs_transcribe 等价于 has_audio。
         "captions": [],
+        # 本地文件恒为单视频，无播放列表
+        "playlist": None,
     }
 
 
@@ -219,23 +250,41 @@ def probe_url(url: str) -> dict:
     except ImportError:
         fail("缺少 yt-dlp：请先运行 python scripts/setup.py --install（或 pip install yt-dlp）")
 
-    # 冻结契约指定的选项：只取元数据，不下载
+    # 只取元数据，不下载媒体
     opts = {"quiet": True, "skip_download": True}
-    log(f"yt_dlp 读取 URL 元数据: {url}")
+    safe_url = redact_url(url)
+    log(f"yt_dlp 读取 URL 元数据: {safe_url}")
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        fail(f"yt_dlp 元数据获取失败: {type(e).__name__}: {e}")
+        detail = redact_text_urls(str(e).replace(url, safe_url))
+        fail(f"yt_dlp 元数据获取失败: {type(e).__name__}: {detail}")
     if not info:
         fail("yt_dlp 未返回任何元数据")
 
-    # 播放列表：探测第一个有效条目（整体元数据不代表单个视频）
+    # 播放列表：探测第一个有效条目（整体元数据不代表单个视频），
+    # 同时把整份集数清单写进 playlist 字段，供编排层按 index 选集
+    playlist = None
     if info.get("entries") is not None:
         entries = [e for e in (info.get("entries") or []) if e]
         if not entries:
             fail("播放列表为空，无法探测")
-        log("检测到播放列表，探测第一个条目")
+        items = []
+        for i, entry in enumerate(entries):
+            dur = to_float(entry.get("duration"))
+            items.append({
+                "index": i + 1,  # 1 起，与 download.py --item 口径一致
+                "title": entry.get("title") or entry.get("id") or "",
+                "duration": round(dur, 3) if dur is not None else None,
+            })
+        playlist = {"count": len(items), "items": items}
+        log(f"检测到播放列表（共 {len(items)} 集），探测第 1 集；前 10 集清单:")
+        for it in items[:10]:
+            dur_text = f"{it['duration']:g}s" if it["duration"] is not None else "时长未知"
+            log(f"  {it['index']}. {it['title']}（{dur_text}）")
+        if len(items) > 10:
+            log("  ...")
         info = entries[0]
 
     # 合并手动/自动字幕；同一语言手动优先（只记 manual）
@@ -269,7 +318,7 @@ def probe_url(url: str) -> dict:
     duration = to_float(info.get("duration"))
     return {
         "kind": "url",
-        "title": info.get("title") or url,
+        "title": info.get("title") or safe_url,
         "duration": round(duration, 3) if duration is not None else None,
         "width": width,
         "height": height,
@@ -277,6 +326,7 @@ def probe_url(url: str) -> dict:
         "has_audio": has_audio,
         "has_video": has_video,
         "captions": captions,
+        "playlist": playlist,
     }
 
 
@@ -314,6 +364,7 @@ def main(argv=None) -> int:
         "has_audio": meta["has_audio"],
         "has_video": meta["has_video"],
         "captions": meta["captions"],
+        "playlist": meta.get("playlist"),
         "needs_transcribe": needs_transcribe,
         "suggested_budget": suggested_budget,
     })

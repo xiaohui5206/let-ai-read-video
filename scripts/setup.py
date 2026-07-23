@@ -16,7 +16,8 @@
     * yt-dlp 缺失        → 下载 GitHub releases 最新 yt-dlp.exe 到 tools/
     * ffmpeg/ffprobe 缺失 → 下载 gyan.dev ffmpeg-release-essentials.zip，
       只解压 bin/ffmpeg.exe、bin/ffprobe.exe 到 tools/（二者同包，缺谁解压谁）
-    * python 包          → python -m pip install -U yt-dlp faster-whisper
+    * python 包          → python -m pip install yt-dlp faster-whisper
+      （默认不升级已安装版本；显式 --upgrade 才升级）
     * 已在 tools/ 或 PATH 可用的工具不重复下载；模型权重不预下载
       （首次转写时由引擎自行缓存）。
 
@@ -94,10 +95,19 @@ def check_packages() -> dict:
     return out
 
 
-def build_missing(tools: dict, packages: dict) -> list[str]:
-    """缺失清单：工具用原名（ffmpeg/ffprobe/yt-dlp），python 包加 `pip:` 前缀以区分。"""
-    missing = [t for t, st in tools.items() if not st.get("found")]
-    missing += [f"pip:{d}" for d, st in packages.items() if not st.get("installed")]
+def build_missing(tools: dict, packages: dict, profile: str = "all") -> list[str]:
+    """按运行场景生成缺失清单；本地媒体不强制安装 yt-dlp。"""
+    required_tools = ("ffmpeg", "ffprobe")
+    required_packages = ("faster-whisper",)
+    if profile == "all":
+        required_tools += ("yt-dlp",)
+        required_packages += ("yt-dlp",)
+    missing = [t for t in required_tools if not tools.get(t, {}).get("found")]
+    missing += [
+        f"pip:{dist}"
+        for dist in required_packages
+        if not packages.get(dist, {}).get("installed")
+    ]
     return missing
 
 
@@ -160,18 +170,20 @@ def _download(url: str, dest: Path) -> None:
         raise
 
 
-def install_tools(tools_status: dict) -> list[str]:
+def install_tools(tools_status: dict, *, include_ytdlp: bool = True) -> list[str]:
     """把缺失的便携工具下载到 <SKILL>/tools/，返回本次下载的工具名列表。"""
     tdir = common.tools_dir()
     tdir.mkdir(parents=True, exist_ok=True)
     done: list[str] = []
 
     # 1) yt-dlp.exe（GitHub releases latest）
-    if not tools_status["yt-dlp"]["found"]:
+    if include_ytdlp and not tools_status["yt-dlp"]["found"]:
         _download(YTDLP_EXE_URL, tdir / "yt-dlp.exe")
         done.append("yt-dlp")
-    else:
+    elif include_ytdlp:
         common.log("yt-dlp 已可用，跳过便携版下载")
+    else:
+        common.log("local profile 不需要 yt-dlp，跳过")
 
     # 2) ffmpeg / ffprobe（gyan.dev essentials zip，二者同包）
     need = [t for t in ("ffmpeg", "ffprobe") if not tools_status[t]["found"]]
@@ -196,15 +208,26 @@ def install_tools(tools_status: dict) -> list[str]:
     return done
 
 
-def pip_install(mirror: str | None, with_cuda: bool = False) -> list[str]:
-    """pip 安装/升级 python 包（--mirror cn 加清华镜像），返回安装的包名列表。"""
-    targets = ["yt-dlp", "faster-whisper"]
+def pip_install(
+    mirror: str | None,
+    with_cuda: bool = False,
+    *,
+    include_ytdlp: bool = True,
+    upgrade: bool = False,
+) -> list[str]:
+    """pip 安装所需包；仅显式 --upgrade 时升级已有环境。"""
+    targets = ["faster-whisper"]
+    if include_ytdlp:
+        targets.insert(0, "yt-dlp")
     if with_cuda:
         targets += list(CUDA_LIBS)
-    cmd = [sys.executable, "-m", "pip", "install", "-U"] + targets
+    cmd = [sys.executable, "-m", "pip", "install"]
+    if upgrade:
+        cmd.append("--upgrade")
+    cmd += targets
     if mirror == "cn":
         cmd += ["-i", TSINGHUA_PYPI]
-    common.log("安装/升级 python 包: " + " ".join(cmd))
+    common.log("安装 python 包: " + " ".join(cmd))
     proc = common.run(cmd, timeout=1800, check=False)
     for line in (proc.stdout or "").strip().splitlines()[-10:]:
         common.log("  pip: " + line)
@@ -232,12 +255,23 @@ def main(argv=None) -> int:
     g.add_argument("--check", action="store_true",
                    help="只检查环境并报告（默认行为）")
     g.add_argument("--install", action="store_true",
-                   help="下载缺失的便携 yt-dlp/ffmpeg/ffprobe 到 tools/，并 pip 安装/升级 yt-dlp、faster-whisper")
+                   help="下载当前 profile 缺失的便携工具，并用 pip 补齐所需 Python 包")
     ap.add_argument("--mirror", choices=["cn"], default=None,
                     help="pip 使用清华镜像 https://pypi.tuna.tsinghua.edu.cn/simple（仅 --install 时生效）")
     ap.add_argument("--with-cuda", action="store_true",
                     help="--install 时追加安装 GPU 加速库 nvidia-cublas-cu12 + nvidia-cudnn-cu12"
                          "（有 NVIDIA 显卡时用，转写提速 10~50 倍；无 N 卡不必装）")
+    ap.add_argument(
+        "--profile",
+        choices=["local", "all"],
+        default="all",
+        help="local 仅准备本地文件/B站缓存；all 另含 URL 下载所需 yt-dlp（默认 all）",
+    )
+    ap.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="显式升级已有 Python 包；默认只补齐缺失依赖",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -246,17 +280,27 @@ def main(argv=None) -> int:
         installed = None
 
         if args.install:
-            downloaded = install_tools(tools)
-            pkg_targets = pip_install(args.mirror, with_cuda=args.with_cuda)
+            include_ytdlp = args.profile == "all"
+            downloaded = install_tools(
+                tools,
+                include_ytdlp=include_ytdlp,
+            )
+            pkg_targets = pip_install(
+                args.mirror,
+                with_cuda=args.with_cuda,
+                include_ytdlp=include_ytdlp,
+                upgrade=args.upgrade,
+            )
             installed = {"tools": downloaded, "packages": pkg_targets}
             common.log("安装完成，复查环境 ...")
             tools = check_tools()
             packages = check_packages()
 
-        missing = build_missing(tools, packages)
+        missing = build_missing(tools, packages, args.profile)
         result = {
             "ok": True,
             "action": "install" if args.install else "check",
+            "profile": args.profile,
             "tools": tools,
             "packages": packages,
             "gpu": check_gpu(),

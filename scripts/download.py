@@ -5,7 +5,7 @@ download.py — 用 yt_dlp 下载媒体与字幕到指定目录。
 
 用法:
     python scripts/download.py --url <URL> --out-dir <目录>
-        [--audio-only] [--max-height 720] [--no-captions]
+        [--item 3|3-7|all] [--audio-only] [--max-height 720] [--no-captions]
 
 行为:
   * 视频:  format = bestvideo[height<=N][ext=mp4]+bestaudio/best[height<=N]/best，
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
@@ -65,12 +66,14 @@ def fail(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 复用 common.find_tool（冻结契约）。common.py 缺失时启用最小兜底实现。
+# 优先复用 common.find_tool；common.py 缺失时启用最小兜底实现。
 # ---------------------------------------------------------------------------
 try:
     sys.path.insert(0, str(SCRIPTS_DIR))
-    from common import find_tool  # type: ignore
+    from common import find_tool, redact_text_urls, redact_url  # type: ignore
 except Exception:  # pragma: no cover - 兜底分支
+    import re
+    from urllib.parse import urlsplit, urlunsplit
 
     def find_tool(name):
         """先 <SKILL>/tools/<name>.exe，再 PATH；找不到返回 None。"""
@@ -79,6 +82,26 @@ except Exception:  # pragma: no cover - 兜底分支
         if cand.is_file():
             return str(cand)
         return shutil.which(name) or shutil.which(exe)
+
+    def redact_url(value):
+        try:
+            parts = urlsplit(str(value))
+            host = parts.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            port = parts.port
+            netloc = f"{host}:{port}" if port is not None else host
+            return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        except Exception:
+            return "<redacted-url>"
+
+    def redact_text_urls(value):
+        return re.sub(
+            r"https?://[^\s<>\"']+",
+            lambda match: redact_url(match.group(0)),
+            str(value),
+            flags=re.IGNORECASE,
+        )
 
 
 def lang_rank(lang):
@@ -99,6 +122,29 @@ def to_float(v):
         return None if f != f else f  # NaN 检查
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# --item 选集解析
+# ---------------------------------------------------------------------------
+def resolve_item_request(raw, count: int) -> tuple:
+    """解析 --item 三种写法 → (requested_items, downloaded_item)。
+
+    '3'（单集）/ '3-7'（闭区间，校验 1<=lo<=hi<=count）/ 'all'（全部）。
+    本脚本仍只下载单集：区间/all 只下第一集，requested_items 交给编排层循环。
+    """
+    s = str(raw).strip().lower()
+    hint = f"支持 '3'（单集）、'3-7'（闭区间）、'all'（全部）；当前集数范围 1-{count}"
+    if s == "all":
+        return list(range(1, count + 1)), 1
+    m = re.fullmatch(r"(\d+)(?:-(\d+))?", s)
+    if not m:
+        fail(f"--item '{raw}' 写法非法：{hint}")
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) is not None else lo
+    if not 1 <= lo <= hi <= count:
+        fail(f"--item '{raw}' 非法：需满足 1<=lo<=hi<=集数范围 1-{count}（{hint}）")
+    return list(range(lo, hi + 1)), lo
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +278,9 @@ def main(argv=None) -> int:
                     help="只下载音轨并转换为 m4a（仍会按规则下载字幕）")
     ap.add_argument("--max-height", type=int, default=720,
                     help="视频流最大高度（像素），超限自动降档，最终兜底 best")
+    ap.add_argument("--item", default="1",
+                    help="多P/播放列表选集：'3'（单集）、'3-7'（闭区间）、'all'（全部）；"
+                         "区间/all 本趟只下第一集，逐集循环由编排层负责")
     ap.add_argument("--no-captions", action="store_true",
                     help="不下载任何字幕（captions 返回空列表）")
     args = ap.parse_args(argv)
@@ -258,16 +307,34 @@ def main(argv=None) -> int:
             "（可先运行 python scripts/setup.py --install）")
 
     # ---- 阶段 1：只取元数据，决定字幕语言 ------------------------------------
-    log(f"读取元数据: {args.url}")
+    safe_url = redact_url(args.url)
+    log(f"读取元数据: {safe_url}")
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
             info = ydl.extract_info(args.url, download=False)
     except Exception as e:
-        fail(f"元数据获取失败: {type(e).__name__}: {e}")
+        detail = redact_text_urls(str(e).replace(args.url, safe_url))
+        fail(f"元数据获取失败: {type(e).__name__}: {detail}")
     if not info:
         fail("yt_dlp 未返回任何元数据")
+    # 非播放列表时保持 None，RESULT_JSON 对应字段输出 null
+    requested_items = None
+    downloaded_item = None
     if info.get("entries") is not None:
-        fail("暂不支持播放列表 URL，请提供单个视频链接")
+        entries = [e for e in info["entries"] if e]
+        if not entries:
+            fail("播放列表为空，没有可下载的条目")
+        requested_items, downloaded_item = resolve_item_request(args.item, len(entries))
+        idx = downloaded_item - 1
+        entry_desc = entries[idx].get("title") or entries[idx].get("id")
+        if len(requested_items) > 1:
+            log(f"检测到播放列表（共 {len(entries)} 集），请求第 {requested_items[0]}-"
+                f"{requested_items[-1]} 集（共 {len(requested_items)} 集）；"
+                f"本趟只下第 {downloaded_item} 集，其余交给编排层循环: {entry_desc}")
+        else:
+            log(f"检测到播放列表（共 {len(entries)} 集），下载第 {downloaded_item} 集: "
+                f"{entry_desc}")
+        info = entries[idx]  # 之后阶段全部按单集处理
 
     manual_langs = set((info.get("subtitles") or {}).keys())
     auto_langs = set((info.get("automatic_captions") or {}).keys())
@@ -301,7 +368,8 @@ def main(argv=None) -> int:
                 ydl.download([args.url])  # 兼容极老版本 yt-dlp
                 info2 = info
     except Exception as e:
-        fail(f"下载失败: {type(e).__name__}: {e}")
+        detail = redact_text_urls(str(e).replace(args.url, safe_url))
+        fail(f"下载失败: {type(e).__name__}: {detail}")
 
     media = resolve_media_path(info2 or info, out_dir, args.audio_only, since)
     if media is None:
@@ -319,7 +387,8 @@ def main(argv=None) -> int:
                     ydl.download([args.url])
         except Exception as e:
             # 自动字幕补齐失败不致命：媒体已在手，降级为警告继续
-            log(f"警告: 自动字幕下载失败（忽略）: {type(e).__name__}: {e}")
+            detail = redact_text_urls(str(e).replace(args.url, safe_url))
+            log(f"警告: 自动字幕下载失败（忽略）: {type(e).__name__}: {detail}")
 
     # ---- 阶段 4：扫描实际生成的 .vtt，回填 captions --------------------------
     captions = [] if args.no_captions else scan_captions(out_dir, media, manual_langs, since)
@@ -335,6 +404,9 @@ def main(argv=None) -> int:
         "title": (info2 or {}).get("title") or info.get("title") or "",
         "duration": round(duration, 3) if duration is not None else None,
         "captions": captions,
+        # 播放列表选集结果：单视频时为 null；区间/all 时 downloaded_item 为本次实际下载的第一集
+        "requested_items": requested_items,
+        "downloaded_item": downloaded_item,
     })
     return 0
 

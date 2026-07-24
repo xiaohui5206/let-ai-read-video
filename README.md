@@ -17,6 +17,16 @@ One command turns a video into a timestamped transcript + keyframes; the agent r
 
 大模型能读网页、读文件，但原生读不了视频。云方案（如各类转写 SaaS）要么收费、要么数据出机、要么只有音频维度。video-watch 把**媒体处理链路**全部搬到本机：**画面和语音双通道**，转写与抽帧不经过任何云端；有 NVIDIA GPU 时 1 小时视频约 3～5 分钟处理完（实测 27～53 倍实时）。
 
+## 版本历史
+
+| 版本 | 日期 | 新增内容 |
+|---|---|---|
+| [v1.2.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.2.0) | 2026-07-25 | **三大件产出**：run 目录根部一键生成 `【阅读总结】<标题>.md`、`【文字稿】<标题>.docx`、`【关键帧】<标题>.pdf`（`deliver.py`）；详细阅读总结模板；SKILL.md 工作流新增第 7 步 |
+| [v1.1.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.1.0) | 2026-07-23 | 文稿—画面时间窗审查 + 局部补帧；**多P/合集选集**（probe 清单，`--item` 单集/区间/全部） |
+| [v1.0.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.0.0) | 2026-07-22 | 首个公开发布：纯本地双通道视频阅读（GPU 转写 + 场景感知抽帧，数据不出机） |
+
+完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 特性
 
 - 🎬 **双通道理解**：语音转写（faster-whisper 本地推理）+ 自适应抽帧（场景检测 + 均匀补点）；`frames.json` 同时保留请求时间与实际解码 PTS，回答可带 `t=MM:SS` 引用
@@ -134,6 +144,16 @@ python scripts/review.py refresh --review runs/<本次任务>/review.json
 ## Why this project
 
 LLMs can read webpages and files, but they can't watch videos natively. Cloud solutions (transcription SaaS) either cost money, exfiltrate your data, or only cover the audio track. video-watch brings the entire **media-processing pipeline** local: **dual-channel understanding (visuals + speech)** — no cloud involved in transcription or frame extraction — and with an NVIDIA GPU a 1-hour video is processed in about 3–5 minutes (measured 27–53× realtime).
+
+## Version history
+
+| Version | Date | Highlights |
+|---|---|---|
+| [v1.2.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.2.0) | 2026-07-25 | **Three deliverables per run**: `【阅读总结】<title>.md`, `【文字稿】<title>.docx`, `【关键帧】<title>.pdf` generated in one command (`deliver.py`); detailed summary template; new step 7 in the `SKILL.md` workflow |
+| [v1.1.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.1.0) | 2026-07-23 | Transcript–visual window review + targeted frame refinement; **multi-part/playlist selection** (probe listing, `--item` single/range/all) |
+| [v1.0.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.0.0) | 2026-07-22 | Initial release: fully local dual-channel video reading (GPU transcription + scene-aware frame extraction, data never leaves the machine) |
+
+Full history in [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 

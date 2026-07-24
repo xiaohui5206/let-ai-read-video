@@ -28,6 +28,7 @@ One command turns a video into a timestamped transcript + keyframes; the agent r
 - 🧩 **AI 无关**：任何能跑命令行 + 读图的 Agent（Kimi / Claude Code / Codex / ...）读 `SKILL.md` 即可上手
 - 💰 **成本感知**：首轮按时长分配预算（2fps/100 帧上限），局部补帧最高 4fps 且有独立总量限制，避免全片暴力加密
 - 📚 **多P/合集选集**：probe 输出合集清单（集数/标题/时长），`--item` 支持单集（`'3'`）、区间（`'3-7'`）与全部（`'all'`）；多集逐集产出独立 run 目录并聚合结果，单集失败自动降级
+- 📦 **三大件产出**：读完一个视频，run 目录根部即得命名醒目的 `【阅读总结】<标题>.md`、`【文字稿】<标题>.docx`、`【关键帧】<标题>.pdf` 三个交付文件（【】前缀排序相邻、一眼可辨）；`deliver.py` 一键生成文字稿 docx 与关键帧 PDF
 
 ## 快速开始
 
@@ -50,6 +51,9 @@ python scripts/watch.py "https://www.bilibili.com/video/BVxxxx" --item 3
 
 # 3. 让 AI 读产物回答
 #    产物在 runs/<标题>_<时间戳>/：transcript.txt + frames/ + review.json + manifest.json
+
+# 4.（可选）一键生成交付文件：【文字稿】docx +【关键帧】pdf 落在 run 目录根部
+python scripts/deliver.py --run runs/<标题>_<时间戳>
 ```
 
 常用参数：`--start 12:30 --end 18:00`（聚焦时段）· `--no-frames`（纯音频内容）· `--width 1024`（看清屏幕文字）· `--language zh`（中文）· `--model medium`（更准）· `--force-whisper`（弃用平台字幕）
@@ -82,7 +86,7 @@ python scripts/review.py refresh --review runs/<本次任务>/review.json
 
 ## 给 AI Agent 使用
 
-让 Agent 读 [SKILL.md](SKILL.md) 并照做即可——里面是完整工作流：环境自检 → 跑 `watch.py` → 读转写与帧 → 填写审查包 → 必要时定向补帧 → 带时间戳作答，含缓存模式、追问复用、长视频策略与排障指引。
+让 Agent 读 [SKILL.md](SKILL.md) 并照做即可——里面是完整工作流：环境自检 → 跑 `watch.py` → 读转写与帧 → 填写审查包 → 必要时定向补帧 → 带时间戳作答 → 产出三大件，含缓存模式、追问复用、长视频策略与排障指引。收尾按 `references/summary-template.md` 撰写 `【阅读总结】<标题>.md`，再运行 `python scripts/deliver.py --run runs/<run>` 生成 `【文字稿】<标题>.docx` 与 `【关键帧】<标题>.pdf`。
 
 ## 工作原理
 
@@ -142,6 +146,7 @@ LLMs can read webpages and files, but they can't watch videos natively. Cloud so
 - 🧩 **Agent-agnostic**: any agent that can run shell commands and read images (Kimi / Claude Code / Codex / ...) works by reading `SKILL.md`
 - 💰 **Cost-aware**: base-pass caps stay at 2 fps / 100 frames; targeted passes may use up to 4 fps under a separate extra-frame budget
 - 📚 **Multi-part / playlist selection**: probe returns a `playlist.items` listing (index/title/duration); `--item` accepts a single episode (`'3'`), a range (`'3-7'`), or `'all'`; multi-episode runs produce one run directory per episode with aggregated results and per-episode failure fallback
+- 📦 **Three deliverables per run**: once a video is read, the run directory root carries three boldly named files — `【阅读总结】<title>.md`, `【文字稿】<title>.docx`, `【关键帧】<title>.pdf` (the 【】 prefix keeps them adjacent in any file manager); `deliver.py` generates the transcript docx and keyframe PDF in one command
 
 ## Quick start
 
@@ -164,6 +169,9 @@ python scripts/watch.py "https://www.bilibili.com/video/BVxxxx" --item 3
 
 # 3. Let the agent read the artifacts and answer
 #    Artifacts in runs/<title>_<timestamp>/: transcript.txt + frames/ + review.json + manifest.json
+
+# 4. (Optional) Generate deliverables in one command: 【文字稿】docx + 【关键帧】pdf at the run root
+python scripts/deliver.py --run runs/<title>_<timestamp>
 ```
 
 Common flags: `--start 12:30 --end 18:00` (focus window) · `--no-frames` (audio-only content) · `--width 1024` (read on-screen text) · `--language zh` (Chinese) · `--model medium` (higher accuracy) · `--force-whisper` (skip platform captions)
@@ -196,7 +204,7 @@ Tools and outputs stay inside the project directory (`tools/`, `runs/`); Python 
 
 ## For AI agents
 
-Point the agent at [SKILL.md](SKILL.md) and let it follow the workflow: environment check → run `watch.py` → inspect transcript and frames → assess the review packet → refine uncertain intervals when needed → answer with timestamps. It also covers cache mode, run reuse, long-video strategy, and troubleshooting.
+Point the agent at [SKILL.md](SKILL.md) and let it follow the workflow: environment check → run `watch.py` → inspect transcript and frames → assess the review packet → refine uncertain intervals when needed → answer with timestamps → produce the three deliverables. It also covers cache mode, run reuse, long-video strategy, and troubleshooting. To wrap up, the agent writes `【阅读总结】<title>.md` from `references/summary-template.md`, then runs `python scripts/deliver.py --run runs/<run>` to generate `【文字稿】<title>.docx` and `【关键帧】<title>.pdf`.
 
 ## How it works
 

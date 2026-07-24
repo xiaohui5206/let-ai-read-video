@@ -8,6 +8,21 @@ Format follows Keep a Changelog; versioning follows SemVer.
 
 ---
 
+## [1.2.0] - 2026-07-25
+
+### 新增 / Added
+- **三大件产出**：每读完一个视频，run 目录根部生成命名醒目的 `【阅读总结】<标题>.md`、
+  `【文字稿】<标题>.docx`、`【关键帧】<标题>.pdf`，【】前缀让三者在文件管理器中排序相邻、
+  一眼可辨；文件名标题经净化（去除半角 `/\:*?"<>|` 与控制字符、首尾 trim、最长 60 字符）。
+- **一键交付脚本**（`scripts/deliver.py`）：读 `transcript.txt` 与 `frames.json` 生成
+  Word 文字稿与关键帧 PDF（封面 + 每页 2 帧 + 实际时间戳图注）；CJK 字体多级回退，
+  支持 `--out-dir` / `--title` / `--font`。
+- **阅读总结模板**（`references/summary-template.md`）：视频信息 / 一句话总结 / 内容脉络 /
+  逐章详解 / 关键概念 / 亮点金句 / 总结启发；`SKILL.md` 工作流新增第 7 步"产出三大件"。
+- `setup.py` 依赖新增 reportlab 与 python-docx；`tests/test_deliver.py` 新增单元测试。
+
+---
+
 ## [1.1.0] - 2026-07-23
 
 ### 新增 / Added

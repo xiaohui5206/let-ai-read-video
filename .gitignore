@@ -5,3 +5,14 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# 本地解释器、配置与认证信息不进 GitHub
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+cookies.txt
+*.cookies.txt
+*.log
+.pytest_cache/

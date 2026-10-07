@@ -27,9 +27,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
+import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -55,6 +59,8 @@ try:
 
     slugify = common.slugify
     parse_time = common.parse_time
+    find_tool = common.find_tool
+    runs_dir = common.runs_dir
 except Exception:  # pragma: no cover - 兜底分支
 
     def slugify(text, maxlen=40):
@@ -85,6 +91,13 @@ except Exception:  # pragma: no cover - 兜底分支
                 total = total * 60 + float(part)
             return total
         return float(s)
+
+    def find_tool(name):
+        """兜底：仅查 PATH（Windows 经 PATHEXT 匹配）。"""
+        return shutil.which(name) or shutil.which(f"{name}.exe")
+
+    def runs_dir():
+        return Path(os.environ.get("VIDEO_WATCH_RUNS_DIR") or SKILL_ROOT / "runs").resolve()
 
 
 def log(msg: str) -> None:
@@ -228,52 +241,76 @@ def _step_abort(msg: str, raise_on_fail: bool) -> None:
 def run_step(script: str, args: list, label: str, fatal: bool = True,
              timeout: float | None = None, raise_on_fail: bool = False) -> dict | None:
     """
-    调用同目录子脚本并解析其 RESULT_JSON。
+    调用同目录子脚本并解析其 RESULT_JSON（Popen 流式转发）。
 
     - subprocess 用 list 形式，不使用 shell=True（Windows 安全）。
-    - 子进程 stdout/stderr 透传到本脚本日志（RESULT_JSON 行除外）。
-    - fatal=True（默认）：找不到 RESULT_JSON、退出码非 0 或 ok=false 时立即中止整个流水线。
-    - fatal=False：失败时记日志并返回 None，由调用方决定降级路径（如缓存模式的回退）。
-    - raise_on_fail=True（多集模式）：致命失败改抛 EpisodeFailed，由编排循环记为单集失败。
+    - 子进程 stderr 并入 stdout（防管道缓冲打满死锁），stdout 逐行实时透传
+      到本脚本日志（RESULT_JSON 行除外），长步骤进度即时可见。
+    - timeout 到期杀子进程；fatal=True（默认）：找不到 RESULT_JSON、退出码非 0
+      或 ok=false 时立即中止整个流水线；fatal=False：失败记日志返回 None；
+      raise_on_fail=True（多集模式）：致命失败改抛 EpisodeFailed。
     """
     cmd = [sys.executable, str(SCRIPTS_DIR / script)] + [str(a) for a in args]
     log(f"▶ {label}")
     log(f"  $ python scripts/{script} {' '.join(_display_arg(a) for a in args)}")
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")  # 保证子进程输出 UTF-8
-    # tag 需在 try 之前定义：TimeoutExpired 的 fatal=False 降级日志也会引用
     tag = script[:-3] if script.endswith(".py") else script
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # 并入 stdout：防 stderr 缓冲打满死锁
             text=True,
             encoding="utf-8",
             errors="replace",
             env=env,
-            timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        timeout_desc = f"{timeout:g}s" if timeout else "配置时限"
-        msg = f"{label} 超时（>{timeout_desc}）"
+    except OSError as exc:
+        _step_abort(f"{label} 启动失败: {exc}", raise_on_fail)
+
+    # 读取线程把行送入无界队列；主循环带 deadline 轮询，子进程沉默也按时超时
+    q: queue.Queue = queue.Queue()
+    strip_chars = chr(13) + chr(10)   # 行尾 CRLF/LF
+
+    def _reader() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            q.put(line.rstrip(strip_chars))
+        q.put(None)  # EOF 哨兵
+
+    threading.Thread(target=_reader, daemon=True,
+                     name=f"watch-step-{tag}").start()
+
+    out_lines: list = []
+    deadline = None if not timeout else time.monotonic() + timeout
+    timed_out = False
+    while True:
+        if deadline is not None and time.monotonic() > deadline:
+            timed_out = True
+            proc.kill()
+            break
+        try:
+            line = q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if line is None:
+            break
+        out_lines.append(line)
+        if not line.startswith(RESULT_PREFIX):
+            print(f"  [{tag}] {line}", flush=True)
+    if timed_out:
+        proc.wait()
+        msg = f"{label} 超时（>{timeout:g}s）"
         if fatal:
             _step_abort(msg, raise_on_fail)
         log(f"  [{tag}] {msg}，降级处理")
         return None
-    except OSError as exc:
-        _step_abort(f"{label} 启动失败: {exc}", raise_on_fail)
-
-    out = proc.stdout or ""
-    for line in out.splitlines():
-        if not line.startswith(RESULT_PREFIX):
-            print(f"  [{tag}] {line}", flush=True)
-    if proc.stderr:
-        for line in proc.stderr.strip().splitlines():
-            print(f"  [{tag}!] {line}", file=sys.stderr, flush=True)
+    proc.wait()
 
     # 从末尾向前找 RESULT_JSON（契约保证它是最后一行，倒序查找最稳）
     result = None
-    for line in reversed(out.splitlines()):
+    for line in reversed(out_lines):
         if line.startswith(RESULT_PREFIX):
             try:
                 result = json.loads(line[len(RESULT_PREFIX):])
@@ -289,10 +326,55 @@ def run_step(script: str, args: list, label: str, fatal: bool = True,
     if proc.returncode != 0 or not result.get("ok"):
         if fatal:
             _step_abort(f"{label} 失败: {result.get('error') or f'退出码 {proc.returncode}'}", raise_on_fail)
-        log(f"  [{script[:-3] if script.endswith('.py') else script}] 失败（非致命，降级处理）: "
+        log(f"  [{tag}] 失败（非致命，降级处理）: "
             f"{result.get('error')}")
         return None
     return result
+
+
+def recheck_media(video_path) -> dict:
+    """下载完成后用 ffprobe 对实际文件复检 duration/has_video/has_audio。
+
+    probe.py 对 URL 只能拿到 yt-dlp 元数据（formats codec 字段可能缺失误判）；
+    这里以实文件为准覆盖。ffprobe 不可用/失败返回 {}（非致命，保留 probe 元数据）。
+    """
+    if not video_path:
+        return {}
+    try:
+        ffprobe = find_tool("ffprobe")
+    except Exception:
+        ffprobe = None
+    if not ffprobe:
+        return {}
+    cmd = [ffprobe, "-v", "quiet", "-print_format", "json",
+           "-show_format", "-show_streams", str(video_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+    except Exception as exc:
+        log(f"  媒体复检失败（沿用探测元数据）: {exc}")
+        return {}
+    if proc.returncode != 0:
+        log("  媒体复检失败（沿用探测元数据）: ffprobe 退出码非 0")
+        return {}
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    streams = data.get("streams") or []
+    vstream = next((s for s in streams
+                    if s.get("codec_type") == "video"
+                    and s.get("width")
+                    and (s.get("disposition") or {}).get("attached_pic", 0) == 0), None)
+    astream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    out = {"has_video": vstream is not None, "has_audio": astream is not None}
+    try:
+        dur = float((data.get("format") or {}).get("duration"))
+        if dur == dur and dur >= 0:
+            out["duration"] = round(dur, 3)
+    except (TypeError, ValueError):
+        pass
+    return out
 
 
 def pick_caption(captions: list) -> dict | None:
@@ -337,6 +419,8 @@ def parse_args() -> argparse.Namespace:
                     help="聚焦窗口终点：秒 / MM:SS / HH:MM:SS（作用于转写与抽帧）")
     ap.add_argument("--max-frames", type=int, default=None,
                     help="帧数硬上限，透传 frames.py（默认由 frames.py 自动决定）")
+    ap.add_argument("--fps", type=float, default=None,
+                    help="抽帧帧率上限，透传 frames.py（基础模式 frames.py 侧硬上限 2fps）")
     ap.add_argument("--budget", default=None, metavar="auto|N",
                     help="帧预算：auto 或整数，透传 frames.py（默认 auto）")
     ap.add_argument("--width", type=int, default=512,
@@ -523,6 +607,8 @@ def process_one(args: argparse.Namespace, ctx: dict) -> dict:
             fr_args += ["--budget", str(args.budget)]
         if args.max_frames is not None:
             fr_args += ["--max-frames", str(args.max_frames)]
+        if args.fps is not None:
+            fr_args += ["--fps", str(args.fps)]
         fr = step("frames.py", fr_args, "4/4 抽帧 (frames)")
         frames_json = fr.get("frames_json")
         frames_dir = str(Path(frames_json).parent) if frames_json else str(run_dir / "frames")
@@ -564,6 +650,7 @@ def process_one(args: argparse.Namespace, ctx: dict) -> dict:
             "mode": args.mode,
             "budget": args.budget,
             "max_frames": args.max_frames,
+            "fps": args.fps,
             "no_frames": args.no_frames,
             "no_transcribe": args.no_transcribe,
             "force_whisper": args.force_whisper,
@@ -672,6 +759,8 @@ def process_one(args: argparse.Namespace, ctx: dict) -> dict:
         "duration": duration,
         "title": title,
         "transcript_source": transcript_info.get("source"),
+        "has_video": has_video,
+        "has_audio": has_audio,
     }
 
 
@@ -680,7 +769,7 @@ def _episode_run_dir(args: argparse.Namespace, title: str, item: int) -> Path:
     if args.out_dir:
         return Path(args.out_dir).resolve() / f"p{item:02d}"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    return SKILL_ROOT / "runs" / f"{slugify(title)}_p{item:02d}_{stamp}"
+    return runs_dir() / f"{slugify(title)}_p{item:02d}_{stamp}"
 
 
 def run_multi_episodes(args: argparse.Namespace, base: dict, dl_first: dict,
@@ -730,17 +819,21 @@ def run_multi_episodes(args: argparse.Namespace, base: dict, dl_first: dict,
                 if args.force_whisper or args.no_transcribe:
                     dl_args.append("--no-captions")
                 dl = ep_step("download.py", dl_args, f"2/4 下载第 {item} 集 (download)")
-            # has_video/has_audio 取自 probe（同一播放列表各集通常一致）
+            # C01：每集下载后对实际文件 ffprobe 复检，不用首集布尔值兜底
             video_path = dl.get("video_path")
+            recheck = recheck_media(video_path)
+            if recheck:
+                log(f"  第 {item} 集下载后复检: 有视频={recheck.get('has_video')} "
+                    f"有音频={recheck.get('has_audio')} 时长={recheck.get('duration')}")
             result = process_one(args, {
                 "step": ep_step,
                 "raise_on_fail": True,
                 "run_dir": run_dir,
                 "kind": "url",
                 "title": dl.get("title") or base["title"],
-                "duration": dl.get("duration") or base["duration"],
-                "has_video": base["has_video"],
-                "has_audio": base["has_audio"],
+                "duration": recheck.get("duration") or dl.get("duration") or base["duration"],
+                "has_video": recheck.get("has_video", base["has_video"]),
+                "has_audio": recheck.get("has_audio", base["has_audio"]),
                 "video_path": video_path,
                 "audio_path": video_path,
                 "captions": dl.get("captions") or [],
@@ -753,6 +846,8 @@ def run_multi_episodes(args: argparse.Namespace, base: dict, dl_first: dict,
                 "transcript_txt": result.get("transcript_txt"),
                 "frames_json": result.get("frames_json"),
                 "review_json": result.get("review_json"),
+                "has_video": result.get("has_video"),
+                "has_audio": result.get("has_audio"),
             })
             succeeded += 1
             log(f"  ✓ 第 {item} 集完成")
@@ -843,7 +938,7 @@ def main() -> None:
             run_dir = Path(args.out_dir).resolve()
         else:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            run_dir = SKILL_ROOT / "runs" / f"{slugify(dir_name)}_{stamp}"
+            run_dir = runs_dir() / f"{slugify(dir_name)}_{stamp}"
         run_dir.mkdir(parents=True, exist_ok=True)
         log(f"  run 目录: {run_dir}")
         pc = step("prepare_cache.py",
@@ -886,7 +981,7 @@ def main() -> None:
             run_dir = Path(args.out_dir).resolve()
         else:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            run_dir = SKILL_ROOT / "runs" / f"{slugify(title)}_{stamp}"
+            run_dir = runs_dir() / f"{slugify(title)}_{stamp}"
         run_dir.mkdir(parents=True, exist_ok=True)
         log(f"  run 目录: {run_dir}")
         log("2/4 本地文件，跳过下载")
@@ -928,7 +1023,7 @@ def main() -> None:
         run_dir = Path(args.out_dir).resolve()
     else:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        run_dir = SKILL_ROOT / "runs" / f"{slugify(title)}_{stamp}"
+        run_dir = runs_dir() / f"{slugify(title)}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     log(f"  run 目录: {run_dir}")
 
@@ -963,14 +1058,19 @@ def main() -> None:
 
     # ---- 单集：默认流程 ----------------------------------------------------
     video_path = dl.get("video_path")
+    # C01：对实际下载的文件 ffprobe 复检，覆盖 probe 元数据（codec 缺失会误判）
+    recheck = recheck_media(video_path)
+    if recheck:
+        log(f"  下载后复检: 有视频={recheck.get('has_video')} "
+            f"有音频={recheck.get('has_audio')} 时长={recheck.get('duration')}")
     result = process_one(args, {
         "step": step,
         "run_dir": run_dir,
         "kind": "url",
         "title": dl.get("title") or title,
-        "duration": dl.get("duration") or duration,
-        "has_video": has_video,
-        "has_audio": has_audio,
+        "duration": recheck.get("duration") or dl.get("duration") or duration,
+        "has_video": recheck.get("has_video", has_video),
+        "has_audio": recheck.get("has_audio", has_audio),
         "video_path": video_path,
         "audio_path": video_path,
         "captions": dl.get("captions") or [],

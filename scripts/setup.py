@@ -10,13 +10,13 @@
 
 检查对象:
     工具（<SKILL>/tools/ 优先，其次 PATH）：ffmpeg、ffprobe、yt-dlp
-    python 包（当前解释器）：yt-dlp（模块 yt_dlp）、faster-whisper（模块 faster_whisper）、reportlab、python-docx（产出依赖）
+    python 包（当前解释器）：yt-dlp（模块 yt_dlp）、faster-whisper（模块 faster_whisper）
 
 --install 行为:
     * yt-dlp 缺失        → 下载 GitHub releases 最新 yt-dlp.exe 到 tools/
     * ffmpeg/ffprobe 缺失 → 下载 gyan.dev ffmpeg-release-essentials.zip，
       只解压 bin/ffmpeg.exe、bin/ffprobe.exe 到 tools/（二者同包，缺谁解压谁）
-    * python 包          → python -m pip install yt-dlp faster-whisper reportlab python-docx
+    * python 包          → python -m pip install yt-dlp faster-whisper
       （默认不升级已安装版本；显式 --upgrade 才升级）
     * 已在 tools/ 或 PATH 可用的工具不重复下载；模型权重不预下载
       （首次转写时由引擎自行缓存）。
@@ -44,13 +44,7 @@ FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.z
 TSINGHUA_PYPI = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 TOOLS = ("ffmpeg", "ffprobe", "yt-dlp")
-PACKAGES = (
-    ("yt-dlp", "yt_dlp"),
-    ("faster-whisper", "faster_whisper"),
-    # 产出依赖（deliver.py 交付件），所有 profile 都应安装
-    ("reportlab", "reportlab"),
-    ("python-docx", "docx"),
-)
+PACKAGES = (("yt-dlp", "yt_dlp"), ("faster-whisper", "faster_whisper"))
 # GPU 加速可选依赖（不装则自动回退 CPU，不影响 ready 判定）
 CUDA_LIBS = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 
@@ -104,7 +98,7 @@ def check_packages() -> dict:
 def build_missing(tools: dict, packages: dict, profile: str = "all") -> list[str]:
     """按运行场景生成缺失清单；本地媒体不强制安装 yt-dlp。"""
     required_tools = ("ffmpeg", "ffprobe")
-    required_packages = ("faster-whisper", "reportlab", "python-docx")
+    required_packages = ("faster-whisper",)
     if profile == "all":
         required_tools += ("yt-dlp",)
         required_packages += ("yt-dlp",)
@@ -222,7 +216,7 @@ def pip_install(
     upgrade: bool = False,
 ) -> list[str]:
     """pip 安装所需包；仅显式 --upgrade 时升级已有环境。"""
-    targets = ["faster-whisper", "reportlab", "python-docx"]
+    targets = ["faster-whisper"]
     if include_ytdlp:
         targets.insert(0, "yt-dlp")
     if with_cuda:

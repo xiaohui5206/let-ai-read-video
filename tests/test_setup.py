@@ -22,8 +22,6 @@ class SetupProfilesTests(unittest.TestCase):
         }
         packages = {
             "faster-whisper": {"installed": True},
-            "reportlab": {"installed": True},
-            "python-docx": {"installed": True},
             "yt-dlp": {"installed": False},
         }
 

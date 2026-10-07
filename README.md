@@ -1,265 +1,82 @@
-# Let AI Read Video!（video-watch）
+# Let AI Read Video!（video-watch）v2.0.0
 
-**让任何 AI 真正"看"视频：本地媒体预处理、零外部音视频 API 的视频阅读 skill。**
-把视频一次性处理成「带时间戳的语音转写 + 抽帧图片」，AI 对照阅读后，像看完并听完整个视频一样回答你的问题。
+把 B站视频（链接 / 本地文件 / 客户端缓存）在本机处理成**带时间戳的文字稿 + 关键帧 + 可导出的 PDF**。浏览器里点按钮即可完成，**不需要 AI Agent，数据不出机**。
 
-**Give any AI agent the ability to truly watch videos — local media preprocessing, zero external audio/video APIs.**
-One command turns a video into a timestamped transcript + keyframes; the agent reads both and answers like someone who actually watched it.
-
-[中文文档](#中文文档) · [English](#english)
+*Give any AI agent the ability to truly watch videos — local media preprocessing, zero external audio/video APIs. One command turns a video into a timestamped transcript + keyframes. v2.0 adds a local Web UI so no agent is needed.*
 
 ---
 
-<a name="中文文档"></a>
-# 中文文档
+## 安装（一次性，需联网）
 
-## 为什么做这个项目
-
-大模型能读网页、读文件，但原生读不了视频。云方案（如各类转写 SaaS）要么收费、要么数据出机、要么只有音频维度。video-watch 把**媒体处理链路**全部搬到本机：**画面和语音双通道**，转写与抽帧不经过任何云端；有 NVIDIA GPU 时 1 小时视频约 3～5 分钟处理完（实测 27～53 倍实时）。
-
-## 特性
-
-- 🎬 **双通道理解**：语音转写（faster-whisper 本地推理）+ 自适应抽帧（场景检测 + 均匀补点）；`frames.json` 同时保留请求时间与实际解码 PTS，回答可带 `t=MM:SS` 引用
-- 🔎 **证据驱动补帧**：自动生成时间对齐的 `review.json`；人或任意多模态模型判断证据是否充足，再用中立 JSON 计划只补关键时间窗
-- ⚡ **双档速度通道**：
-  1. B站客户端本地缓存 → 纯离线免下载，11 分钟视频实测 40 秒
-  2. 常规链路（任意 URL/本地文件）→ GPU 下 1 小时视频 3～5 分钟
-- 🔒 **本地媒体管线**：下载后的转写与抽帧不调用第三方音视频 API；最终读图的数据边界取决于你选用的 Agent，完全离线时请搭配本地多模态模型
-- 🧩 **AI 无关**：任何能跑命令行 + 读图的 Agent（Kimi / Claude Code / Codex / ...）读 `SKILL.md` 即可上手
-- 💰 **成本感知**：首轮按时长分配预算（2fps/100 帧上限），局部补帧最高 4fps 且有独立总量限制，避免全片暴力加密
-- 📚 **多P/合集选集**：probe 输出合集清单（集数/标题/时长），`--item` 支持单集（`'3'`）、区间（`'3-7'`）与全部（`'all'`）；多集逐集产出独立 run 目录并聚合结果，单集失败自动降级
-- 📦 **三大件产出**：读完一个视频，run 目录根部即得命名醒目的 `【阅读总结】<标题>.md`、`【文字稿】<标题>.docx`、`【关键帧】<标题>.pdf` 三个交付文件（【】前缀排序相邻、一眼可辨）；`deliver.py` 一键生成文字稿 docx 与关键帧 PDF
-
-## 版本历史
-
-| 版本 | 日期 | 新增内容 |
-|---|---|---|
-| [v1.2.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.2.0) | 2026-07-25 | **三大件产出**：run 目录根部一键生成 `【阅读总结】<标题>.md`、`【文字稿】<标题>.docx`、`【关键帧】<标题>.pdf`（`deliver.py`）；详细阅读总结模板；SKILL.md 工作流新增第 7 步 |
-| [v1.1.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.1.0) | 2026-07-23 | 文稿—画面时间窗审查 + 局部补帧；**多P/合集选集**（probe 清单，`--item` 单集/区间/全部） |
-| [v1.0.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.0.0) | 2026-07-22 | 首个公开发布：纯本地双通道视频阅读（GPU 转写 + 场景感知抽帧，数据不出机） |
-
-完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
-
-## 快速开始
-
-需要 Python 3.10 或更高版本（推荐 3.11/3.12）。本地文件不需要 yt-dlp；运行安装脚本时会按所选功能补齐缺失组件。
+要求 Windows + Python 3.10+（推荐 3.11/3.12）。
 
 ```bash
-# 1. 环境自检 + 安装（ffmpeg/yt-dlp 便携版 + python 包，首次约 2～5 分钟）
-python scripts/setup.py --check              # 仅本地工作流可加 --profile local
-python scripts/setup.py --install            # 中国大陆加 --mirror cn
-python scripts/setup.py --install --profile local # 只处理本地文件/B站缓存，不装 yt-dlp
-python scripts/setup.py --install --with-cuda # 有 N 卡时追加 CUDA 库，提速 10～50 倍
-
-# 2. 处理视频（三选一）
-python scripts/watch.py "https://www.bilibili.com/video/BVxxxx"   # B站链接
-python scripts/watch.py "C:\Users\<你>\Videos\bilibili\<cid>"      # B站客户端缓存目录（最快）
-python scripts/watch.py "meeting.mp4"                              # 本地文件
-
-# 多P/合集：先 probe 看清单，再用 --item 选集（'3' 单集 · '3-7' 区间 · 'all' 全部）
-python scripts/watch.py "https://www.bilibili.com/video/BVxxxx" --item 3
-
-# 3. 让 AI 读产物回答
-#    产物在 runs/<标题>_<时间戳>/：transcript.txt + frames/ + review.json + manifest.json
-
-# 4.（可选）一键生成交付文件：【文字稿】docx +【关键帧】pdf 落在 run 目录根部
-python scripts/deliver.py --run runs/<标题>_<时间戳>
+python scripts/setup.py --install              # 装齐 ffmpeg/yt-dlp 便携版 + Python 包
+python scripts/setup.py --install --with-cuda  # 有 N 卡加上这条，提速 10～50 倍
+python scripts/setup.py --check                # 随时体检，看还缺什么
 ```
 
-常用参数：`--start 12:30 --end 18:00`（聚焦时段）· `--no-frames`（纯音频内容）· `--width 1024`（看清屏幕文字）· `--language zh`（中文）· `--model medium`（更准）· `--force-whisper`（弃用平台字幕）
+- 只处理本地文件/B站缓存：`--profile local`（不装 yt-dlp）
+- 中国大陆：`--mirror cn`；首次转写前设 `HF_ENDPOINT=https://hf-mirror.com` 和 `HF_HUB_DISABLE_XET=1`（详见 [references/engines.md](references/engines.md)）
+- 首次转写自动下载模型权重（tiny 75MB / small 465MB / medium 1.5GB）
 
-需要细看时，先由人或任意多模态模型填写 `review.json` 中的 `assessment`，再执行：
+## 启动
+
+双击 **`启动WebUI.bat`** → 浏览器自动打开 `http://127.0.0.1:8765`。
+
+启动器自动：查找 Python（支持 `VIDEO_WATCH_PYTHON` 环境变量与项目内 venv）、识别端口冲突并复用已有实例、异常时给出中文诊断。也可命令行启动：`python scripts/launch_webui.py`。
+
+## 界面用法
+
+**来源三选一**：视频链接 / 本地文件（直接粘路径，支持中文、空格、引号）/ B站缓存目录（最快，纯离线）。
+
+**模式三种**：单个视频 ｜ 多P生成（先「解析分P」再勾选集数，不会默认全跑）｜ 批量视频（每行一个，实时提示有效/重复/无效行）。
+
+**三个按钮**：`生成文字稿` / `生成关键帧` / `同时生成`。两条进度条独立推进，点了一个可随时再点另一个；同源媒体自动复用，不重复下载。
+
+**生成设置（右侧栏）**：
+
+- 截取原则：正常（按时长自动分档，上限 100 帧）/ 目标帧数 / 严格间隔取帧（含起点）
+- 清晰度：512 / 768 / 1024 宽度（录屏、PPT 建议 1024）
+- 关键字定位：按关键字回归文字稿时刻定向补帧，命中明细可展开
+- 关键帧去重：相似度阈值可调，只标记不删图、可一键恢复，按钮/预览/PDF 数量口径一致
+
+**任务管理**：重型任务全局排队、可取消；刷新/重启不丢历史（重启后未完成任务如实标记"已中断"）；产物文件被移动会提示"文件不可用"并保留重试入口。
+
+**阅读与导出**：文字稿阅读区（搜索高亮、点时间戳跳到最近关键帧、复制、下载 TXT/SRT）；关键帧大图查看（方向键切换）；结果卡片一键导出带时间标识的 `关键帧.pdf`（每页 1/2/6 帧可选）。
+
+## 产物
+
+每次任务落在 `runs/<视频标题>_<时间戳>/`：`文字稿.txt`、`文字稿.srt`、`关键帧/`、`关键帧.pdf`（导出后），以及 `transcript.json` / `frames.json` / `manifest.json` 等结构化数据。
+
+## 隐私与合规
+
+- 只监听 127.0.0.1；转写与抽帧不调用第三方云端音视频 API；URL 凭据全程脱敏
+- 仓库不分发 ffmpeg/yt-dlp 二进制（`setup.py` 首次安装时从官方源下载，各自适用 LGPL/GPL/Unlicense）
+- 本项目不调用 B站任何需要登录态的私有接口；请确保对所处理内容有合法使用权（详见 [NOTICE](NOTICE)）
+
+## 排障
+
+- 环境问题：先看界面右上角「环境状态」（显卡/CUDA 库/模型缓存分项展示，可重新检测）
+- 转写幻觉、模型选择、镜像下载失败：见 [references/engines.md](references/engines.md)
+- 下载失败会分类提示（连接/无数据/需登录/提取器）并给出建议；B站不稳定时可改用本地文件或缓存入口
+
+## 回归验证（开发者）
 
 ```bash
-python scripts/review.py plan --review runs/<本次任务>/review.json --out runs/<本次任务>/refine_plan.json
-python scripts/refine.py --video <manifest中的video_path> --out-dir runs/<本次任务> --plan runs/<本次任务>/refine_plan.json --pass-id r1
-python scripts/review.py refresh --review runs/<本次任务>/review.json
+python -m unittest discover -s tests -v   # 单元测试
+node tests/test_webui_frontend.js         # 前端回归
+python tests/e2e_real.py                  # 真实端到端（需 ffmpeg、转写包与已缓存模型）
 ```
 
-`refine.py` 会沿用首轮分辨率，只追加新帧而不删除首轮结果；`refresh` 仅重置新增证据影响到的窗口。默认最多两轮、累计最多 120 张补帧。“语音和画面不同”本身不会触发补帧，只有证据不足或需要排除转场/同步误差时才细化。格式见 [自适应视听审查协议](references/adaptive-review.md)。
+## AI Agent / CLI 用法
 
-首次转写会自动下载模型权重（tiny 75MB / small 465MB / medium 1.5GB）；中国大陆请先设置 `HF_ENDPOINT=https://hf-mirror.com` 和 `HF_HUB_DISABLE_XET=1`（详见 [references/engines.md](references/engines.md)）。
+[SKILL.md](SKILL.md) 的 Agent 工作流、`watch.py` 命令行、[review/refine 审查补帧协议](references/adaptive-review.md) 全部保留，与 Web UI 共存。
 
-## 首次使用会下载什么
+## 更多文档
 
-本项目不打包任何二进制，以下内容由脚本在首次使用时从**官方源**自动下载，全程透明可审计：
+- 更新记录：[CHANGELOG.md](CHANGELOG.md)
+- 版本差异与交接：[docs/VERSION_NOTES.md](docs/VERSION_NOTES.md)、[docs/HANDOVER.md](docs/HANDOVER.md)
+- 验证报告与后续清单：[docs/VALIDATION.md](docs/VALIDATION.md)、[docs/FOLLOWUP_REVIEW.md](docs/FOLLOWUP_REVIEW.md)
 
-| 内容 | 大小 | 来源 | 时机 |
-|---|---|---|---|
-| ffmpeg + ffprobe 便携版 | 约 90 MB | gyan.dev（ffmpeg 官方推荐 Windows 构建） | `setup.py --install` |
-| yt-dlp.exe 便携版 | 约 15 MB | GitHub yt-dlp 官方 releases | `setup.py --install` |
-| Python 包（faster-whisper 等） | 约 100 MB | PyPI | `setup.py --install` |
-| CUDA 库（可选，N 卡加速） | 约 1 GB | PyPI | 加 `--with-cuda` 时 |
-| Whisper 模型权重 | 75 MB / 465 MB / 1.5 GB（tiny/small/medium） | HuggingFace | 首次转写时 |
-
-工具与产物全部落在项目目录内（`tools/`、`runs/`）；Python 包装入你的 Python 环境，模型权重存入 HuggingFace 标准缓存目录（`~/.cache/huggingface`）。除此之外不碰系统、不碰个人文件。
-
-## 给 AI Agent 使用
-
-让 Agent 读 [SKILL.md](SKILL.md) 并照做即可——里面是完整工作流：环境自检 → 跑 `watch.py` → 读转写与帧 → 填写审查包 → 必要时定向补帧 → 带时间戳作答 → 产出三大件，含缓存模式、追问复用、长视频策略与排障指引。收尾按 `references/summary-template.md` 撰写 `【阅读总结】<标题>.md`，再运行 `python scripts/deliver.py --run runs/<run>` 生成 `【文字稿】<标题>.docx` 与 `【关键帧】<标题>.pdf`。
-
-## 工作原理
-
-```
-输入（URL / 本地文件 / B站缓存目录）
-  │
-  ├─ B站缓存 ──→ 剥前缀修复 m4s ──→ 纯音频/无音频视频流直接使用
-  └─ 其他 ──→ yt-dlp 下载（字幕优先）
-                │
-                ▼
-   faster-whisper 本地转写（GPU 加速，VAD 防幻觉）
-                │
-                ▼
-   ffmpeg 自适应抽帧（均匀骨架 + 场景点，帧帧记录实际解码 PTS）
-                │
-                ▼
-   transcript + frames → 时间窗 review.json
-                │
-                ├─ 证据充分 ──→ 带 t=MM:SS 引用作答
-                └─ 证据不足 ──→ refine_plan.json → 增量补帧 → 复查
-```
-
-## 实测性能（RTX 4060 Laptop 8GB，float16）
-
-| 任务 | 耗时 |
-|---|---|
-| 5 分钟视频全链路（转写 small + 80 帧） | 18 秒 |
-| 11 分钟 B站缓存视频全链路（转写 + 100 帧） | 40 秒 |
-| 1 小时视频转写（small 模型） | 约 2～3 分钟 |
-| 抽帧 | 80 帧约 7 秒 |
-
-## 合规说明
-
-- 本项目代码为原创，采用 [MIT License](LICENSE)；设计思路致谢见 [NOTICE](NOTICE)。
-- 仓库不分发 ffmpeg/yt-dlp 二进制（它们由 setup.py 首次运行时从官方渠道下载，各自适用 LGPL/GPL/Unlicense）。
-- 本项目不调用 B站任何需要登录态的私有接口（如字幕 API）。B站视频有两种合规途径：yt-dlp 下载公开视频页，或读取用户本机官方客户端的缓存（纯离线、更快）。请确保你对所处理内容有合法使用权（详见 NOTICE 免责声明）。
-
-**作者 / Author**：[xiaohui5206](https://github.com/xiaohui5206)
-
----
-
-<a name="english"></a>
-# English
-
-## Why this project
-
-LLMs can read webpages and files, but they can't watch videos natively. Cloud solutions (transcription SaaS) either cost money, exfiltrate your data, or only cover the audio track. video-watch brings the entire **media-processing pipeline** local: **dual-channel understanding (visuals + speech)** — no cloud involved in transcription or frame extraction — and with an NVIDIA GPU a 1-hour video is processed in about 3–5 minutes (measured 27–53× realtime).
-
-## Features
-
-- 🎬 **Dual-channel understanding**: local speech transcription (faster-whisper) + adaptive frame extraction (scene detection + uniform backbone); `frames.json` keeps both requested times and decoded-frame PTS for grounded `t=MM:SS` citations
-- 🔎 **Evidence-driven refinement**: produces a timestamp-aligned `review.json`; a human or any vision-capable model can assess evidence quality and request frames only for uncertain intervals through a neutral JSON protocol
-- ⚡ **Two speed tiers**:
-  1. Bilibili client local cache → fully offline, zero download; an 11-minute video fully processed in 40 seconds (measured)
-  2. Standard pipeline (any URL / local file) → 1-hour video in 3–5 minutes on GPU
-- 🔒 **Local media pipeline**: transcription and frame extraction use no third-party audio/video API after download; final image-review privacy follows the agent you choose, so use a local multimodal model for a fully offline workflow
-- 🧩 **Agent-agnostic**: any agent that can run shell commands and read images (Kimi / Claude Code / Codex / ...) works by reading `SKILL.md`
-- 💰 **Cost-aware**: base-pass caps stay at 2 fps / 100 frames; targeted passes may use up to 4 fps under a separate extra-frame budget
-- 📚 **Multi-part / playlist selection**: probe returns a `playlist.items` listing (index/title/duration); `--item` accepts a single episode (`'3'`), a range (`'3-7'`), or `'all'`; multi-episode runs produce one run directory per episode with aggregated results and per-episode failure fallback
-- 📦 **Three deliverables per run**: once a video is read, the run directory root carries three boldly named files — `【阅读总结】<title>.md`, `【文字稿】<title>.docx`, `【关键帧】<title>.pdf` (the 【】 prefix keeps them adjacent in any file manager); `deliver.py` generates the transcript docx and keyframe PDF in one command
-
-## Version history
-
-| Version | Date | Highlights |
-|---|---|---|
-| [v1.2.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.2.0) | 2026-07-25 | **Three deliverables per run**: `【阅读总结】<title>.md`, `【文字稿】<title>.docx`, `【关键帧】<title>.pdf` generated in one command (`deliver.py`); detailed summary template; new step 7 in the `SKILL.md` workflow |
-| [v1.1.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.1.0) | 2026-07-23 | Transcript–visual window review + targeted frame refinement; **multi-part/playlist selection** (probe listing, `--item` single/range/all) |
-| [v1.0.0](https://github.com/xiaohui5206/let-ai-read-video/releases/tag/v1.0.0) | 2026-07-22 | Initial release: fully local dual-channel video reading (GPU transcription + scene-aware frame extraction, data never leaves the machine) |
-
-Full history in [CHANGELOG.md](CHANGELOG.md).
-
-## Quick start
-
-Requires Python 3.10 or newer (3.11/3.12 recommended). Local files do not require yt-dlp; the installer fills only the components needed for the selected workflow.
-
-```bash
-# 1. Check + install (portable ffmpeg/yt-dlp + python packages; ~2–5 min first time)
-python scripts/setup.py --check               # add --profile local for local-only use
-python scripts/setup.py --install             # mainland China: add --mirror cn
-python scripts/setup.py --install --profile local # local files/Bilibili cache; skip yt-dlp
-python scripts/setup.py --install --with-cuda  # NVIDIA GPU: CUDA libs, 10–50× faster
-
-# 2. Process a video (pick one)
-python scripts/watch.py "https://www.bilibili.com/video/BVxxxx"   # Bilibili URL
-python scripts/watch.py "C:\Users\<you>\Videos\bilibili\<cid>"     # Bilibili client cache dir (fastest)
-python scripts/watch.py "meeting.mp4"                              # local file
-
-# Multi-part/playlist: probe first for the item list, then pick with --item ('3' single · '3-7' range · 'all' everything)
-python scripts/watch.py "https://www.bilibili.com/video/BVxxxx" --item 3
-
-# 3. Let the agent read the artifacts and answer
-#    Artifacts in runs/<title>_<timestamp>/: transcript.txt + frames/ + review.json + manifest.json
-
-# 4. (Optional) Generate deliverables in one command: 【文字稿】docx + 【关键帧】pdf at the run root
-python scripts/deliver.py --run runs/<title>_<timestamp>
-```
-
-Common flags: `--start 12:30 --end 18:00` (focus window) · `--no-frames` (audio-only content) · `--width 1024` (read on-screen text) · `--language zh` (Chinese) · `--model medium` (higher accuracy) · `--force-whisper` (skip platform captions)
-
-For a closer look, let a human or any vision-capable model fill the `assessment` fields in `review.json`, then run:
-
-```bash
-python scripts/review.py plan --review runs/<run>/review.json --out runs/<run>/refine_plan.json
-python scripts/refine.py --video <video_path from manifest> --out-dir runs/<run> --plan runs/<run>/refine_plan.json --pass-id r1
-python scripts/review.py refresh --review runs/<run>/review.json
-```
-
-The refinement pass inherits the base resolution and appends evidence without deleting base frames. `refresh` resets only windows whose evidence changed. Defaults enforce at most two passes and 120 cumulative extra frames. Audio/visual differences alone do not trigger more sampling; refinement is reserved for insufficient evidence or diagnosing possible transition/sync errors. See the [adaptive review protocol](references/adaptive-review.md).
-
-On first transcription the model weights download automatically (tiny 75MB / small 465MB / medium 1.5GB). In mainland China, set `HF_ENDPOINT=https://hf-mirror.com` and `HF_HUB_DISABLE_XET=1` first (see [references/engines.md](references/engines.md)).
-
-## What gets downloaded on first run
-
-This repository ships no binaries. The items below are fetched automatically from **official sources** on first use — fully transparent and auditable:
-
-| Item | Size | Source | When |
-|---|---|---|---|
-| ffmpeg + ffprobe (portable) | 约 90 MB | gyan.dev (officially recommended Windows build) | `setup.py --install` |
-| yt-dlp.exe (portable) | 约 15 MB | Official yt-dlp GitHub releases | `setup.py --install` |
-| Python packages (faster-whisper etc.) | 约 100 MB | PyPI | `setup.py --install` |
-| CUDA libraries (optional, NVIDIA GPU boost) | 约 1 GB | PyPI | with `--with-cuda` |
-| Whisper model weights | 75 MB / 465 MB / 1.5 GB (tiny/small/medium) | HuggingFace | first transcription |
-
-Tools and outputs stay inside the project directory (`tools/`, `runs/`); Python packages go into your Python environment, and model weights go to the standard HuggingFace cache (`~/.cache/huggingface`). Nothing else is touched — no system settings, no personal files.
-
-## For AI agents
-
-Point the agent at [SKILL.md](SKILL.md) and let it follow the workflow: environment check → run `watch.py` → inspect transcript and frames → assess the review packet → refine uncertain intervals when needed → answer with timestamps → produce the three deliverables. It also covers cache mode, run reuse, long-video strategy, and troubleshooting. To wrap up, the agent writes `【阅读总结】<title>.md` from `references/summary-template.md`, then runs `python scripts/deliver.py --run runs/<run>` to generate `【文字稿】<title>.docx` and `【关键帧】<title>.pdf`.
-
-## How it works
-
-```
-Input (URL / local file / Bilibili cache dir)
-  │
-  ├─ Bilibili cache ──→ strip m4s prefix ──→ use audio-only / video-only streams directly
-  └─ Others ──→ yt-dlp download (platform captions preferred)
-                │
-                ▼
-   faster-whisper local transcription (GPU-accelerated, VAD anti-hallucination)
-                │
-                ▼
-   ffmpeg adaptive frame extraction (uniform backbone + scene points, decoded-frame PTS)
-                │
-                ▼
-   transcript + frames → timestamp-window review.json
-                │
-                ├─ sufficient evidence → answer with t=MM:SS citations
-                └─ insufficient evidence → refine_plan.json → append frames → reassess
-```
-
-## Measured performance (RTX 4060 Laptop 8GB, float16)
-
-| Task | Time |
-|---|---|
-| 5-min video, full pipeline (small transcription + 80 frames) | 18 s |
-| 11-min Bilibili cache video, full pipeline (transcription + 100 frames) | 40 s |
-| 1-hour video transcription (small model) | 2–3 min |
-| Frame extraction | 80 frames in 7 s |
-
-## Compliance
-
-- All code in this project is original work, licensed under the [MIT License](LICENSE); design inspirations are acknowledged in [NOTICE](NOTICE).
-- This repository does not redistribute ffmpeg/yt-dlp binaries — `setup.py` downloads them from official sources on first run (they are covered by LGPL/GPL/Unlicense respectively).
-- This project makes no calls to any Bilibili private endpoints that require login state (such as the caption API). Bilibili videos can be handled two compliant ways: yt-dlp downloading of public video pages, or reading the local cache of the user's own official client (fully offline, faster). Please make sure you have the legal right to process the content (see the disclaimer in NOTICE).
-
-**Author / 作者**：[xiaohui5206](https://github.com/xiaohui5206)
+**作者 / Author**：[xiaohui5206](https://github.com/xiaohui5206) ｜ License: [MIT](LICENSE)

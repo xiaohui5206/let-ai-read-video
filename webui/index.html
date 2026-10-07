@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Let AI Read Video! · 视频材料工作台</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Let AI Read Video!<span class="subtitle">视频材料工作台</span></div>
+  <div class="spacer"></div>
+  <button class="btn small" id="env-toggle" aria-expanded="false">
+    <span class="dot ok" id="env-dot"></span>环境状态
+  </button>
+</header>
+<div class="env-panel" id="env-panel" hidden>
+  <div id="env-content" aria-live="polite">检测中…</div>
+  <div class="env-actions">
+    <button class="btn small" id="env-recheck">重新检测</button>
+    <span class="hint">缺组件请先运行安装：</span>
+    <code id="install-cmd">python scripts/setup.py --install</code>
+    <button class="link-btn" id="copy-install">复制命令</button>
+  </div>
+</div>
+
+<div class="layout">
+  <main class="workspace">
+    <section class="card" aria-labelledby="input-title">
+      <h2 id="input-title">来源与输入</h2>
+      <div class="warn-strip" id="env-warn" role="status"></div>
+
+      <!-- U05：来源类型 -->
+      <div class="tabs" role="tablist" aria-label="来源类型">
+        <button role="tab" id="tab-src-url" data-source="url" aria-selected="true" aria-controls="source-url">视频链接</button>
+        <button role="tab" id="tab-src-file" data-source="file" aria-selected="false" aria-controls="source-file">本地文件</button>
+        <button role="tab" id="tab-src-cache" data-source="cache" aria-selected="false" aria-controls="source-cache">B站缓存目录</button>
+      </div>
+
+      <div id="source-url" role="tabpanel" aria-labelledby="tab-src-url">
+        <div class="tabs" role="tablist" aria-label="链接处理方式">
+          <button role="tab" id="tab-mode-single" data-tab="single" aria-selected="true" aria-controls="panel-single">单个视频</button>
+          <button role="tab" id="tab-mode-multi" data-tab="multi" aria-selected="false" aria-controls="panel-multi">多P生成</button>
+          <button role="tab" id="tab-mode-batch" data-tab="batch" aria-selected="false" aria-controls="panel-batch">批量视频</button>
+        </div>
+
+        <div id="panel-single" class="field" role="tabpanel" aria-labelledby="tab-mode-single">
+          <label for="single-url">视频链接（B站 / 其他 yt-dlp 支持的站点）</label>
+          <input type="text" id="single-url" placeholder="https://www.bilibili.com/video/BVxxxx">
+          <span class="field-err" id="err-single"></span>
+        </div>
+
+        <div id="panel-multi" class="field" role="tabpanel" aria-labelledby="tab-mode-multi" hidden>
+          <label for="multi-url">视频链接（多P / 合集）</label>
+          <input type="text" id="multi-url" placeholder="https://www.bilibili.com/video/BVxxxx">
+          <div style="display:flex; gap:10px; align-items:center; margin-top:8px; flex-wrap:wrap">
+            <button class="btn small" id="probe-btn">解析分P</button>
+            <span class="hint" id="probe-status"></span>
+          </div>
+          <span class="field-err" id="err-multi"></span>
+          <div id="playlist-area" hidden>
+            <div class="pl-tools">
+              <button class="link-btn" id="pl-all">全选</button>
+              <button class="link-btn" id="pl-none">全不选</button>
+              <span class="hint" id="pl-summary"></span>
+            </div>
+            <div class="pl-list" id="pl-list" role="group" aria-label="分P清单"></div>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label for="multi-item">集数范围（未解析分P时手填）</label>
+            <input type="text" id="multi-item" placeholder="3 / 3-7 / all" style="width:200px">
+          </div>
+        </div>
+
+        <div id="panel-batch" class="field" role="tabpanel" aria-labelledby="tab-mode-batch" hidden>
+          <label for="batch-urls">视频链接列表（每行一个）</label>
+          <textarea id="batch-urls" placeholder="https://www.bilibili.com/video/BVxxxx&#10;https://www.bilibili.com/video/BVyyyy"></textarea>
+          <div class="hint" id="batch-check"></div>
+          <span class="field-err" id="err-batch"></span>
+        </div>
+      </div>
+
+      <div id="source-file" class="field" role="tabpanel" aria-labelledby="tab-src-file" hidden>
+        <label for="file-path">本地文件路径（直接粘贴，支持中文与空格）</label>
+        <input type="text" id="file-path" placeholder="D:\Videos\meeting.mp4">
+        <div class="hint" id="file-check"></div>
+        <span class="field-err" id="err-file"></span>
+      </div>
+
+      <div id="source-cache" class="field" role="tabpanel" aria-labelledby="tab-src-cache" hidden>
+        <label for="cache-path">B站客户端缓存目录（含 .m4s 文件）</label>
+        <input type="text" id="cache-path" placeholder="C:\Users\<你>\Videos\bilibili\<cid>">
+        <div class="hint" id="cache-check"></div>
+        <div class="hint">纯离线免下载，直接读取本机官方客户端缓存，最快。</div>
+        <span class="field-err" id="err-cache"></span>
+      </div>
+
+      <div class="actions">
+        <button class="btn" data-action="transcript">生成文字稿</button>
+        <button class="btn" data-action="frames">生成关键帧</button>
+        <button class="btn primary" data-action="both">同时生成</button>
+      </div>
+      <div class="settings-summary hint" id="settings-summary"></div>
+      <span class="field-err" id="err-actions"></span>
+    </section>
+
+    <section class="card" aria-labelledby="progress-title">
+      <h2 id="progress-title">任务进度</h2>
+      <div class="conn-lost" id="conn-lost" hidden>连接中断，后台任务可能仍在运行，正在重连…</div>
+      <div class="lane" id="lane-transcript">
+        <div class="lane-head">
+          <span class="lane-name">文字稿</span>
+          <span class="lane-stage idle" id="stage-transcript">空闲</span>
+          <span class="lane-pct" id="pct-transcript"></span>
+        </div>
+        <div class="bar" role="progressbar" aria-label="文字稿进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar-transcript">
+          <div class="fill idle" id="fill-transcript"></div>
+        </div>
+      </div>
+      <div class="lane" id="lane-frames">
+        <div class="lane-head">
+          <span class="lane-name">关键帧</span>
+          <span class="lane-stage idle" id="stage-frames">空闲</span>
+          <span class="lane-pct" id="pct-frames"></span>
+        </div>
+        <div class="bar" role="progressbar" aria-label="关键帧进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar-frames">
+          <div class="fill idle" id="fill-frames"></div>
+        </div>
+      </div>
+      <div id="task-list"></div>
+      <details class="log-details">
+        <summary>原始日志（排障时展开）</summary>
+        <pre id="log"><span class="empty">暂无任务。选择来源、粘贴内容后点击上方按钮开始。</span></pre>
+      </details>
+    </section>
+
+    <div id="results" aria-live="polite"></div>
+  </main>
+
+  <aside class="settings" aria-label="生成设置">
+    <button class="settings-toggle" id="settings-toggle" aria-expanded="false">生成设置 ▾</button>
+    <div class="settings-body" id="settings-body">
+      <p class="hint">以下设置仅用于生成关键帧；单独生成文字稿时不会应用。</p>
+      <section class="card">
+        <h2>关键帧截取原则</h2>
+        <div class="field">
+          <label><input type="radio" name="frame-rule" value="default" checked> 正常截取
+            <span class="hint">（按时长自动分档，上限 100 帧）</span></label>
+          <label><input type="radio" name="frame-rule" value="count" id="fr-count-radio"> 目标帧数
+            <input type="number" id="frame-count" min="1" max="100" step="1" value="100" style="width:90px" disabled aria-label="目标帧数"> 帧</label>
+          <div class="hint" id="count-est">实际最多 min(N, 时长×2, 100) 帧</div>
+          <label><input type="radio" name="frame-rule" value="interval" id="fr-interval-radio"> 自定义间隔
+            <input type="number" id="frame-interval" min="0.5" max="600" step="0.5" value="5" style="width:90px" disabled aria-label="自定义间隔秒数"> 秒</label>
+          <div class="hint" id="interval-est">严格均匀取帧（含起点 0），间隔小于 0.5 秒按 0.5 计，超 100 帧截断</div>
+          <span class="field-err" id="err-frame-rule"></span>
+        </div>
+        <div class="field">
+          <label for="frame-width">关键帧清晰度</label>
+          <select id="frame-width">
+            <option value="512">512 px · 轻量预览</option>
+            <option value="768">768 px · 均衡</option>
+            <option value="1024">1024 px · 阅读文字</option>
+          </select>
+          <div class="hint">宽度越大，图片和 PDF 越清晰，处理时间与文件体积也会增加。</div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>关键字定位关键帧</h2>
+        <div class="field">
+          <label for="kw-enabled"><input type="checkbox" id="kw-enabled"> 启用关键字定位</label>
+          <input type="text" id="kw-input" placeholder="关键字，空格/逗号/顿号分隔" maxlength="100" disabled aria-label="关键字">
+          <div class="hint" id="kw-hint">按命中句子的中点取帧，并非逐词时间；大小写不敏感，同句多词合并，最多取样 60 处。结果可展开句子与跳过原因。</div>
+          <span class="field-err" id="err-kw"></span>
+        </div>
+      </section>
+      <section class="card">
+        <h2>关键帧去重</h2>
+        <div class="field">
+          <label for="dedup-enabled"><input type="checkbox" id="dedup-enabled"> 启用关键帧去重</label>
+          <label for="dedup-threshold">相似度阈值 <b id="dedup-val">95%</b>
+            <input type="range" id="dedup-threshold" min="80" max="99" value="95" style="width:100%" disabled></label>
+          <div class="hint">阈值越低，合并越积极。剔除帧不删文件，仅在 frames.json 标记 dropped。</div>
+        </div>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<!-- 帧图浏览浮层（U08：网格/大图双模式 + dialog 语义） -->
+<div id="frames-overlay" class="overlay">
+  <div class="panel" role="dialog" aria-modal="true" aria-label="浏览关键帧" id="frames-dialog" tabindex="-1">
+    <h3>
+      <span id="frames-title">浏览关键帧</span>
+      <span>
+        <button class="link-btn" id="frames-filter">查看已隐藏</button>
+        <button class="link-btn" id="frames-close">关闭 ✕</button>
+      </span>
+    </h3>
+    <div id="frames-grid" class="frame-grid"></div>
+    <div id="frames-big" class="viewer-big" hidden>
+      <img id="big-img" alt="关键帧大图">
+      <div class="viewer-tools">
+        <button class="btn small" id="big-prev">← 上一张</button>
+        <span class="viewer-cap" id="big-cap"></span>
+        <button class="btn small" id="big-next">下一张 →</button>
+        <button class="link-btn" id="big-copy">复制时间戳</button>
+        <button class="link-btn" id="big-restore" hidden>恢复此帧</button>
+        <button class="link-btn" id="big-back">返回网格</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 文字稿阅读浮层（U07） -->
+<div id="reader-overlay" class="overlay">
+  <div class="panel" role="dialog" aria-modal="true" aria-label="阅读文字稿" id="reader-dialog" tabindex="-1">
+    <h3><span id="reader-title">阅读文字稿</span><button class="link-btn" id="reader-close">关闭 ✕</button></h3>
+    <div class="reader-toolbar">
+      <input type="text" id="reader-search" placeholder="搜索文字稿…" aria-label="搜索文字稿">
+      <span class="hint" id="reader-count"></span>
+      <button class="btn small" id="reader-prev">上一个</button>
+      <button class="btn small" id="reader-next">下一个</button>
+      <button class="link-btn" id="reader-copy-ts">复制（带时间戳）</button>
+      <button class="link-btn" id="reader-copy">复制（纯文本）</button>
+      <a id="reader-dl-txt" class="link-btn" target="_blank">下载 TXT</a>
+      <a id="reader-dl-srt" class="link-btn" target="_blank">下载 SRT</a>
+    </div>
+    <div id="reader-empty" class="hint" hidden></div>
+    <div class="seg-list" id="reader-segs"></div>
+    <button class="btn small" id="reader-more" hidden>加载更多</button>
+  </div>
+</div>
+
+<div id="toast-box" aria-live="polite"></div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

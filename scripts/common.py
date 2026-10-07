@@ -31,6 +31,7 @@ common.py 缺失或被单独拷贝时仍可独立运行。兜底实现只覆盖�
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -62,8 +63,9 @@ def tools_dir() -> Path:
 
 
 def runs_dir() -> Path:
-    """运行产物根目录 <SKILL>/runs。只返回路径，不创建（由 watch.py 等按需创建）。"""
-    return skill_root() / "runs"
+    """运行产物根目录；可用 VIDEO_WATCH_RUNS_DIR 隔离测试，只返回路径。"""
+    configured = os.environ.get("VIDEO_WATCH_RUNS_DIR")
+    return Path(configured).expanduser().resolve() if configured else skill_root() / "runs"
 
 
 # ---------------------------------------------------------------- 隐私

@@ -1,0 +1,9 @@
+# 统一换行约定：Python/HTML/CSS/JS/Markdown 用 LF，BAT 用 CRLF（T06）
+*.py    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.md    text eol=lf
+*.bat   text eol=crlf
+*.json  text eol=lf
+SHA256SUMS.txt text eol=lf

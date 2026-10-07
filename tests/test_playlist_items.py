@@ -187,5 +187,58 @@ class DownloadItemTests(unittest.TestCase):
                 self.assertIn("ERROR:", stderr.getvalue())
 
 
+class ProbeCodecTests(unittest.TestCase):
+    """C01：区分「codec 明确为 none」（确定无轨道）与「字段缺失」（未知→保守按有）。"""
+
+    def _probe(self, info):
+        with patch_yt_dlp(info):
+            return run_main(probe, ["--input", "https://example.com/v"])
+
+    def test_c01_formats_all_missing_vcodec_keeps_video_true(self):
+        # formats 非空但所有 format 都缺 vcodec 字段 → 不能判 has_video=False
+        code, result, _, _ = self._probe({
+            "title": "x", "duration": 10.0,
+            "formats": [{"format_id": "f1"}, {"format_id": "f2"}],
+        })
+        self.assertEqual(code, 0)
+        self.assertTrue(result["has_video"])
+        self.assertTrue(result["has_audio"])
+
+    def test_c01_explicit_none_codec_means_no_track(self):
+        code, result, _, _ = self._probe({
+            "title": "x", "duration": 10.0,
+            "formats": [{"vcodec": "none", "acodec": "aac"}],
+        })
+        self.assertFalse(result["has_video"])    # 明确 none = 纯音频格式
+        self.assertTrue(result["has_audio"])
+
+    def test_c01_explicit_codec_present(self):
+        code, result, _, _ = self._probe({
+            "title": "x", "duration": 10.0,
+            "formats": [{"vcodec": "h264", "acodec": "aac"}],
+        })
+        self.assertTrue(result["has_video"])
+        self.assertTrue(result["has_audio"])
+
+    def test_c01_audio_only_formats_but_video_format_missing_fields(self):
+        # 一条明确纯音频 + 一条缺字段 → 缺字段的保守按有
+        code, result, _, _ = self._probe({
+            "title": "x", "duration": 10.0,
+            "formats": [{"vcodec": "none", "acodec": "aac", "format_id": "a"},
+                        {"format_id": "b"}],
+        })
+        # 显式集合只有 "none" → 判定无视频轨道
+        self.assertFalse(result["has_video"])
+
+    def test_c01_no_formats_top_level_fallback(self):
+        # 无 formats 明细：看顶层 codec；仍未知保守按有
+        code, result, _, _ = self._probe({"title": "x", "duration": 10.0, "formats": []})
+        self.assertTrue(result["has_video"])
+        self.assertTrue(result["has_audio"])
+        code, result, _, _ = self._probe({"title": "x", "duration": 10.0,
+                                          "formats": [], "vcodec": "none"})
+        self.assertFalse(result["has_video"])
+
+
 if __name__ == "__main__":
     unittest.main()

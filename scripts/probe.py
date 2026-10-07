@@ -296,13 +296,23 @@ def probe_url(url: str) -> dict:
 
     formats = info.get("formats") or []
     vcodec, acodec = info.get("vcodec"), info.get("acodec")
-    if formats:
-        has_video = any(f.get("vcodec") not in (None, "none") for f in formats)
-        has_audio = any(f.get("acodec") not in (None, "none") for f in formats)
-    else:
-        # 无 formats 明细时看顶层 codec；信息缺失则保守按“有声有画”处理
-        has_video = (vcodec not in (None, "none")) if vcodec is not None else True
-        has_audio = (acodec not in (None, "none")) if acodec is not None else True
+
+    def track_present(codec_values, top_codec):
+        """区分「codec 明确为 none」（确定无轨道）与「字段缺失」（未知→保守按有处理）。
+
+        formats 非空但所有 format 都缺该 codec 字段时不能判 False：
+        只有至少一个 format 显式给出 codec 时才按显式值判定；全缺则回落顶层 codec，
+        仍未知保守按“有”处理（下载后 watch.py 会用 ffprobe 对实文件复检覆盖）。
+        """
+        explicit = [c for c in codec_values if c is not None]
+        if explicit:
+            return any(str(c).lower() != "none" for c in explicit)
+        if top_codec is not None:
+            return str(top_codec).lower() != "none"
+        return True
+
+    has_video = track_present([f.get("vcodec") for f in formats], vcodec)
+    has_audio = track_present([f.get("acodec") for f in formats], acodec)
 
     width, height = info.get("width"), info.get("height")
     fps = to_float(info.get("fps"))

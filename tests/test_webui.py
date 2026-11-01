@@ -230,6 +230,19 @@ class ProgressParsingTests(unittest.TestCase):
         webui.update_progress(job, "  [frames] [video-watch] 完成：新增 80 帧，索引共 80 帧 → frames")
         self.assertEqual(job.progress["frames"]["percent"], 98)
         webui.update_progress(job, "[watch] ✅ 完成")
+        # v2.1.0：auto_pdf 默认开 → frames 通道还有后处理（自动导出 PDF），
+        # ✅ 后保持 99%「整理结果…」中间态，100% 由 _finalize_job_progress 收尾
+        self.assertEqual(job.progress["frames"]["percent"], 99.0)
+        self.assertEqual(job.progress["frames"]["state"], "running")
+        self.assertEqual(job.progress["frames"]["stage"], "整理结果…")
+        webui._finalize_job_progress(job, "done")
+        self.assertEqual(job.progress["frames"]["percent"], 100.0)
+        self.assertEqual(job.progress["frames"]["state"], "done")
+
+    def test_frames_done_directly_at_100_when_no_postprocess(self):
+        # auto_pdf=False 且无关键字/去重/间隔时，✅ 仍直接置 100% done
+        job = webui.Job("single", [URL], True, True, auto_pdf=False)
+        webui.update_progress(job, "[watch] ✅ 完成")
         self.assertEqual(job.progress["frames"]["percent"], 100)
         self.assertEqual(job.progress["frames"]["state"], "done")
 
@@ -772,6 +785,8 @@ class KeptCopyAndManifestTests(unittest.TestCase):
     def test_c06_friendly_copies_only_kept_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
+            (run_dir / "manifest.json").write_text(
+                json.dumps({"title": "C06 演示"}, ensure_ascii=False), encoding="utf-8")
             frames_dir = run_dir / "frames"
             frames_dir.mkdir()
             for name in ("a.jpg", "b.jpg", "c.jpg"):
@@ -786,7 +801,8 @@ class KeptCopyAndManifestTests(unittest.TestCase):
                             "frames_dir": str(frames_dir),
                             "frames_json": str(frames_dir / "frames.json")}]
             webui.friendly_outputs(job)
-            copied = sorted(p.name for p in (run_dir / "关键帧").iterdir())
+            # v2.1.0：副本目录带标题（slugify 清洗，与 run 目录命名同口径）
+            copied = sorted(p.name for p in (run_dir / "c06-演示_关键帧").iterdir())
             self.assertEqual(copied, ["a.jpg", "c.jpg"])   # dropped 帧不进副本
             self.assertEqual(job.results[0]["friendly"]["frame_count"], 2)
 
@@ -816,11 +832,15 @@ class KeptCopyAndManifestTests(unittest.TestCase):
 
 
 class FriendlyOutputsTests(unittest.TestCase):
-    """friendly_outputs：在 run_dir 生成 文字稿.txt/.srt 与 关键帧/ 副本。"""
+    """friendly_outputs：在 run_dir 生成带标题的 文字稿/关键帧 中文副本（v2.1.0 起）。"""
 
     def _make_run(self, root):
         run_dir = root / "测试视频_20260101"
         (run_dir / "frames").mkdir(parents=True)
+        # 标题含非法文件名字符：副本名必须经 slugify 清洗（与 run 目录命名同口径）
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"title": "测试视频：第1课/上?"}, ensure_ascii=False),
+            encoding="utf-8")
         (run_dir / "transcript.txt").write_text("[00:01] 你好", encoding="utf-8")
         (run_dir / "transcript.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\n你好",
                                                 encoding="utf-8")
@@ -839,11 +859,12 @@ class FriendlyOutputsTests(unittest.TestCase):
                 "frames_dir": str(run_dir / "frames"),
             }]
             webui.friendly_outputs(job)
-            # 中文副本就位且内容一致
-            self.assertEqual((run_dir / "文字稿.txt").read_text(encoding="utf-8"),
+            # 中文副本带清洗后的标题前缀且内容一致
+            prefix = "测试视频-第1课-上"
+            self.assertEqual((run_dir / f"{prefix}_文字稿.txt").read_text(encoding="utf-8"),
                              "[00:01] 你好")
-            self.assertTrue((run_dir / "文字稿.srt").is_file())
-            cn_frames = run_dir / "关键帧"
+            self.assertTrue((run_dir / f"{prefix}_文字稿.srt").is_file())
+            cn_frames = run_dir / f"{prefix}_关键帧"
             self.assertEqual(sorted(p.name for p in cn_frames.iterdir()),
                              ["0001_t0001.0.jpg", "0002_t0002.0.jpg"])
             # 原文件保留不动
@@ -851,7 +872,23 @@ class FriendlyOutputsTests(unittest.TestCase):
             self.assertTrue((run_dir / "frames" / "frames.json").is_file())
             friendly = job.results[0]["friendly"]
             self.assertEqual(friendly["frame_count"], 2)
-            self.assertTrue(friendly["frames_dir"].endswith("关键帧"))
+            self.assertTrue(friendly["frames_dir"].endswith(f"{prefix}_关键帧"))
+
+    def test_no_title_falls_back_to_generic_names(self):
+        # 旧任务兼容：manifest 缺失且无标题时沿用旧通用名 文字稿.txt / 关键帧/
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(Path(tmp))
+            (run_dir / "manifest.json").unlink()
+            job = webui.Job("single", [URL], True, True)
+            job.results = [{
+                "url": URL, "ok": True, "run_dir": str(run_dir),
+                "transcript_txt": str(run_dir / "transcript.txt"),
+                "frames_dir": str(run_dir / "frames"),
+            }]
+            webui.friendly_outputs(job)
+            self.assertTrue((run_dir / "文字稿.txt").is_file())
+            self.assertTrue((run_dir / "文字稿.srt").is_file())
+            self.assertTrue((run_dir / "关键帧").is_dir())
 
     def test_skips_failed_or_missing_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1246,6 +1283,7 @@ class ServerTests(unittest.TestCase):
             status, data = self._post_json("/api/jobs", {
                 "mode": "single", "url": URL,
                 "want_transcript": True, "want_frames": True,
+                "auto_pdf": False,   # 本测试聚焦 watch 生命周期，不触发真实 PDF 子进程
             })
             self.assertEqual(status, 200)
             self.assertTrue(data["ok"])

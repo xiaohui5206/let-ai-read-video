@@ -12,8 +12,12 @@
   RESULT_JSON 不受影响）；
 - 双通道进度（文字稿 / 关键帧）由日志锚点驱动，见 update_progress()；
   snapshot() 携带 progress，前端据此渲染两条独立进度条；
-- POST /api/export_pdf 把任务关键帧导出为带时间标识的 关键帧.pdf
+- POST /api/export_pdf 把任务关键帧导出为带时间标识的 <标题>_关键帧.pdf
   （手写 PDF 生成器 scripts/make_frames_pdf.py，零第三方依赖）；
+- 转写模型三档（tiny/small/medium）透传 watch.py --model，仅影响文字稿；
+- 中文醒目副本与 PDF 带视频标题命名（<标题>_文字稿.txt 等，清洗口径与
+  run 目录一致；取不到标题沿用旧通用名）；含关键帧的任务完成后自动导出
+  PDF（v2.1.0 起默认开，前端可关；导出失败只记日志，不影响任务状态）；
 - 侧栏三功能：关键帧截取原则（--max-frames/--fps 透传 watch.py）、
   关键字定位关键帧（postprocess 调 frames.py --times-json --append）、
   关键帧去重（aHash 标记 dropped:true，不删文件）；
@@ -77,12 +81,14 @@ _IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"
 
 
 def build_watch_command(url, want_transcript=True, want_frames=True, item=None,
-                        frame_rule=None, width=None):
+                        frame_rule=None, width=None, model=None):
     """拼装 watch.py 子进程命令（list 形式，禁 shell）。
 
     产物选择 → --no-frames / --no-transcribe；WebUI 不使用审查包，固定
     --no-review；multi 模式透传 --item（'3' / '3-7' / 'all'）；
     width → --width（抽帧宽度，默认 None=512 由 watch.py 决定；U12）。
+    model → --model（转写模型 tiny/small/medium，仅 want_transcript 时透传，
+    与关键帧无关；v2.1.0）。
     frame_rule（关键帧截取原则，仅 want_frames 时生效）：
       {"type": "count", value: N}    → --budget N（目标 N 帧，仍受 2fps/100 硬上限）
       {"type": "interval", value: X} → 不在此拼参：watch.py 以 --no-frames 跑，
@@ -100,6 +106,8 @@ def build_watch_command(url, want_transcript=True, want_frames=True, item=None,
         cmd += ["--item", str(item)]
     if width:
         cmd += ["--width", str(int(width))]
+    if want_transcript and model:
+        cmd += ["--model", str(model)]
     if want_frames and frame_rule and frame_rule.get("type") == "count":
         cmd += ["--budget", str(int(frame_rule["value"]))]
     return cmd
@@ -359,7 +367,8 @@ class Job:
     """一个后台任务：single=1 个 URL；multi=1 个 URL + --item；batch=多 URL 串行。"""
 
     def __init__(self, mode, urls, want_transcript, want_frames, item=None,
-                 frame_rule=None, keywords=None, dedup=None, frame_width=512):
+                 frame_rule=None, keywords=None, dedup=None, frame_width=512,
+                 model="small", auto_pdf=True):
         self.id = uuid.uuid4().hex[:12]
         self.mode = mode
         self.urls = list(urls)
@@ -374,6 +383,10 @@ class Job:
         self.dedup = dedup or {"enabled": False, "threshold": 0.95}
         # U12 抽帧宽度（512 默认 / 768 / 1024）
         self.frame_width = int(frame_width)
+        # 转写模型（tiny/small/medium，仅 want_transcript 时透传 watch.py --model）
+        self.model = model
+        # 完成后自动导出 关键帧.pdf（v2.1.0 起默认开；仅 want_frames 时有意义）
+        self.auto_pdf = bool(auto_pdf)
         self.status = "queued"       # queued|running|cancelling|cancelled|done|partial|error|interrupted
         self.error = None
         self.results = []
@@ -399,9 +412,10 @@ class Job:
         self.postprocess = None
 
     def frames_postprocess_pending(self):
-        """frames 通道在 watch 之后仍有步骤：关键字补帧 / 去重 / 间隔抽帧。"""
+        """frames 通道在 watch 之后仍有步骤：关键字补帧 / 去重 / 间隔抽帧 / 自动导出 PDF。"""
         return self.want_frames and (bool(self.keywords) or bool(self.dedup.get("enabled"))
-                                     or self.frame_rule.get("type") == "interval")
+                                     or self.frame_rule.get("type") == "interval"
+                                     or bool(self.auto_pdf))
 
     def params_dict(self):
         """完整任务参数（持久化 / 重试用）。"""
@@ -409,7 +423,8 @@ class Job:
                 "want_transcript": self.want_transcript,
                 "want_frames": self.want_frames, "item": self.item,
                 "frame_rule": self.frame_rule, "keyword": " ".join(self.keywords),
-                "dedup": self.dedup, "frame_width": self.frame_width}
+                "dedup": self.dedup, "frame_width": self.frame_width,
+                "model": self.model, "auto_pdf": self.auto_pdf}
 
     def log(self, msg):
         with self._lock:
@@ -1070,11 +1085,60 @@ def dedup_frames(job, extract_fn=None, detail_fn=None):
                 f"关键字帧豁免 {skipped_kw}）")
 
 
+# v2.1.0 中文友好副本命名：带视频标题（<标题>_文字稿.txt 等），清洗口径与
+# run 目录命名一致（common.slugify），标题最长 50 字符；取不到标题沿用旧通用名
+FRIENDLY_TITLE_MAX = 50
+
+
+def _friendly_title(run_dir, fallback=None):
+    """副本命名前缀：run_dir 内 manifest.json 的 title 经 slugify 清洗。
+
+    多P 每集有独立 run_dir/manifest，各自取各自标题；manifest 读不到时回退
+    fallback（result 标题），仍不行返回 None（调用方沿用旧通用名，兼容旧产物）。
+    """
+    title = None
+    try:
+        title = json.loads((Path(run_dir) / "manifest.json")
+                           .read_text(encoding="utf-8")).get("title")
+    except (OSError, json.JSONDecodeError):
+        title = None
+    if not title:
+        title = fallback
+    if not isinstance(title, str) or not title.strip():
+        return None
+    return common.slugify(title, max_len=FRIENDLY_TITLE_MAX)
+
+
+def _friendly_names(run_dir, fallback_title=None):
+    """三件套友好名：有标题 → <标题>_文字稿.txt 等；无标题 → 旧通用名。"""
+    prefix = _friendly_title(run_dir, fallback_title)
+    if prefix:
+        return {"transcript_txt": f"{prefix}_文字稿.txt",
+                "transcript_srt": f"{prefix}_文字稿.srt",
+                "frames_dir": f"{prefix}_关键帧",
+                "pdf": f"{prefix}_关键帧.pdf"}
+    return {"transcript_txt": "文字稿.txt", "transcript_srt": "文字稿.srt",
+            "frames_dir": "关键帧", "pdf": "关键帧.pdf"}
+
+
+def _friendly_frames_dir(run_dir):
+    """定位关键帧中文副本目录：新名 <标题>_关键帧/ 优先，旧任务回退 关键帧/。"""
+    run_dir = Path(run_dir)
+    for name in dict.fromkeys((_friendly_names(run_dir)["frames_dir"], "关键帧")):
+        p = run_dir / name
+        if p.is_dir():
+            return p
+    return None
+
+
 def friendly_outputs(job):
     """为每个成功产物在 run_dir 里生成中文醒目命名的副本。
 
-    - transcript.txt / transcript.srt → 文字稿.txt / 文字稿.srt
-    - frames/ 下的帧图 → 关键帧/（C06：只复制保留帧——frames.json 里未标
+    v2.1.0 起副本带视频标题：<标题>_文字稿.txt / <标题>_文字稿.srt /
+    <标题>_关键帧/（标题取 manifest.json，清洗口径与 run 目录命名一致，
+    截断 ≤50 字符；取不到标题时沿用旧通用名 文字稿.txt / 文字稿.srt / 关键帧/）。
+    - transcript.txt / transcript.srt → 文字稿副本
+    - frames/ 下的帧图 → 关键帧副本目录（C06：只复制保留帧——frames.json 里未标
       dropped 的条目；索引缺失/损坏时回退为全量 *.jpg。原 frames/ 始终全量保留）
     原文件保留不动（AI 工作流与 refine 仍按原名引用）；副本路径写入
     result["friendly"]，供前端优先展示。单个产物失败只记日志。
@@ -1083,16 +1147,17 @@ def friendly_outputs(job):
         if not r.get("ok") or not r.get("run_dir"):
             continue
         run_dir = Path(r["run_dir"])
+        names = _friendly_names(run_dir, r.get("title"))
         friendly = {}
         try:
             tt = r.get("transcript_txt")
             if tt and Path(tt).is_file():
-                dst = run_dir / "文字稿.txt"
+                dst = run_dir / names["transcript_txt"]
                 shutil.copy2(tt, dst)
                 friendly["transcript_txt"] = str(dst)
                 srt = Path(tt).with_suffix(".srt")
                 if srt.is_file():
-                    dst_srt = run_dir / "文字稿.srt"
+                    dst_srt = run_dir / names["transcript_srt"]
                     shutil.copy2(srt, dst_srt)
                     friendly["transcript_srt"] = str(dst_srt)
             fd = r.get("frames_dir")
@@ -1111,7 +1176,7 @@ def friendly_outputs(job):
                         kept_names = None
                 if kept_names is None:
                     kept_names = [p.name for p in sorted(Path(fd).glob("*.jpg"))]
-                dst_dir = run_dir / "关键帧"
+                dst_dir = run_dir / names["frames_dir"]
                 dst_dir.mkdir(exist_ok=True)
                 n = 0
                 for name in kept_names:
@@ -1131,8 +1196,35 @@ def friendly_outputs(job):
             job.log(f"[webui] 已生成中文命名产物: {run_dir}")
 
 
+def auto_export_pdf(job):
+    """完成后自动导出 关键帧.pdf（v2.1.0 起默认开，前端复选框可关）。
+
+    对每个 ok 且确有帧产物（run_dir 且 frame_count/frames_json 存在）的 result
+    同步调 run_export_pdf（默认每页 6 帧；百帧 <1s）。导出失败只记日志，
+    绝不设置 frames_error、不影响任务状态——用户仍可用结果卡片上的
+    「导出PDF」手动换版式重导。
+    """
+    for r in job.results:
+        if SCHED.is_cancelled(job.id):
+            return
+        if not r.get("ok") or not r.get("run_dir"):
+            continue
+        if not (r.get("frame_count")
+                or (r.get("frames_json") and Path(r["frames_json"]).is_file())):
+            continue
+        try:
+            result = run_export_pdf(r["run_dir"], per_page=6)
+        except Exception as exc:
+            job.log(f"[webui] 自动导出 PDF 失败（不影响任务）: {exc}")
+            continue
+        if result.get("ok"):
+            job.log(f"[webui] 已自动导出 关键帧.pdf → {result.get('pdf')}")
+        else:
+            job.log(f"[webui] 自动导出 PDF 失败（不影响任务）: {result.get('error')}")
+
+
 def run_postprocess(job):
-    """产物后处理：关键字锁帧 → 关键帧去重 → 中文命名副本 → 预留钩子位。
+    """产物后处理：关键字锁帧 → 关键帧去重 → 中文命名副本 → 自动导出 PDF → 预留钩子位。
 
     顺序保证 friendly_outputs 的 关键帧/ 副本包含关键字新帧、且去重标记已写入
     frames.json。预留钩子后续可挂接流水线之外的其他产物加工；约定：钩子接收
@@ -1165,6 +1257,13 @@ def run_postprocess(job):
         friendly_outputs(job)
     except Exception as exc:
         job.log(f"[webui] 中文命名副本异常（已忽略）: {exc}")
+    if SCHED.is_cancelled(job.id):
+        return
+    if job.want_frames and job.auto_pdf:
+        try:
+            auto_export_pdf(job)
+        except Exception as exc:
+            job.log(f"[webui] 自动导出 PDF 异常（不影响任务）: {exc}")
     hook = job.postprocess
     if hook is None:
         return
@@ -1313,7 +1412,8 @@ def run_job(job):
             cmd = build_watch_command(effective_input, job.want_transcript,
                                       job.want_frames and not interval_mode,
                                       None if reused_from else item, job.frame_rule,
-                                      None if job.frame_width == 512 else job.frame_width)
+                                      None if job.frame_width == 512 else job.frame_width,
+                                      model=job.model if job.want_transcript else None)
             if len(job.urls) > 1:
                 job.log(f"═══ 批量进度 {idx}/{len(job.urls)} ═══")
             job.log(f"$ watch.py {common.redact_url(url)}"
@@ -1720,9 +1820,23 @@ def validate_job_request(payload):
             return None, "frame_width 只支持 512 / 768 / 1024"
         frame_width = raw_width
 
+    # ---- 转写模型（仅影响文字稿，与关键帧无关；v2.1.0） ----
+    raw_model = payload.get("model")
+    model = "small"
+    if raw_model is not None:
+        if not isinstance(raw_model, str) or raw_model not in ("tiny", "small", "medium"):
+            return None, "model 只支持 tiny / small / medium"
+        model = raw_model
+
+    # ---- 完成后自动导出 PDF（v2.1.0 起默认开；仅 want_frames 时有意义） ----
+    auto_pdf = payload.get("auto_pdf", True)
+    if not isinstance(auto_pdf, bool):
+        return None, "auto_pdf 必须是布尔值"
+
     return {"mode": mode, "urls": urls, "want_transcript": want_transcript,
             "want_frames": want_frames, "item": item, "frame_rule": frame_rule,
-            "keywords": keywords, "dedup": dedup, "frame_width": frame_width}, None
+            "keywords": keywords, "dedup": dedup, "frame_width": frame_width,
+            "model": model, "auto_pdf": auto_pdf}, None
 
 
 def resolve_runs_path(raw):
@@ -1743,6 +1857,9 @@ def run_export_pdf(run_dir, per_page=6):
     per_page ∈ {1,2,6} 透传 --per-page（U12 版式）。
     返回该脚本的 RESULT_JSON dict：{ok, pdf, pages, frames_included, ...}
     或 {ok: False, error}；子进程 list 形式、禁 shell、超时 120s。
+    v2.1.0：导出成功后把通用名 关键帧.pdf 重命名为 <标题>_关键帧.pdf
+    （标题取 manifest.json，与中文副本命名同口径；取不到标题或改名失败
+    保留原名，不致命）。
     """
     cmd = [sys.executable, str(SCRIPTS_DIR / "make_frames_pdf.py"),
            "--run-dir", str(run_dir), "--per-page", str(per_page)]
@@ -1761,7 +1878,23 @@ def run_export_pdf(run_dir, per_page=6):
         tail = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()[-300:]
         return {"ok": False,
                 "error": f"make_frames_pdf.py 未输出 RESULT_JSON（退出码 {proc.returncode}）: {tail}"}
+    if result.get("ok") and result.get("pdf"):
+        _rename_pdf_with_title(run_dir, result)
     return result
+
+
+def _rename_pdf_with_title(run_dir, result):
+    """把导出的 关键帧.pdf 就地改名为 <标题>_关键帧.pdf（改写 result["pdf"]）。"""
+    src = Path(result["pdf"])
+    target_name = _friendly_names(run_dir)["pdf"]
+    if src.name == target_name:
+        return
+    try:
+        # 同目录原子改名；目标已存在则覆盖（手动换版式重导场景）
+        os.replace(src, src.with_name(target_name))
+        result["pdf"] = str(src.with_name(target_name).resolve())
+    except OSError:
+        pass   # 改名失败保留原名，导出本身已成功
 
 
 def dedup_restore(run_dir, file_name):
@@ -1774,7 +1907,8 @@ def _dedup_restore_locked(run_dir, file_name):
     """U08：恢复某张被去重隐藏的帧（幂等）。
 
     去掉 frames.json 里该帧 dropped/dedup_similarity 标记（原子写），同步
-    dedup_report.json 统计；若 关键帧/ 副本目录存在则补拷该帧（口径一致）。
+    dedup_report.json 统计；若关键帧副本目录存在则补拷该帧（口径一致；
+    v2.1.0 起副本目录带标题 <标题>_关键帧/，旧任务的 关键帧/ 也认得）。
     返回 {ok, total_count, kept_count, dropped_count} 或 {ok: False, error}。
     """
     frames_json = Path(run_dir) / "frames" / "frames.json"
@@ -1806,10 +1940,10 @@ def _dedup_restore_locked(run_dir, file_name):
             _write_json_atomic(report_path, report)
         except (OSError, json.JSONDecodeError):
             pass
-    # 关键帧/ 副本目录补拷（按钮/预览/PDF/副本口径一致）
-    copy_dir = Path(run_dir) / "关键帧"
+    # 关键帧副本目录补拷（按钮/预览/PDF/副本口径一致；新名优先，旧名回退）
+    copy_dir = _friendly_frames_dir(run_dir)
     src = frames_json.parent / file_name
-    if copy_dir.is_dir() and src.is_file():
+    if copy_dir is not None and src.is_file():
         try:
             shutil.copy2(src, copy_dir / src.name)
         except OSError:
@@ -2085,7 +2219,7 @@ class WebUIHandler(BaseHTTPRequestHandler):
         self._send_json(result, 200 if result.get("ok") else 500)
 
     def _export_pdf(self):
-        """POST /api/export_pdf {run_dir}：把该任务的关键帧导出为 关键帧.pdf。"""
+        """POST /api/export_pdf {run_dir}：把该任务的关键帧导出为 <标题>_关键帧.pdf。"""
         payload, err = self._read_json_body()
         if err:
             self._send_json({"ok": False, "error": err}, 400)

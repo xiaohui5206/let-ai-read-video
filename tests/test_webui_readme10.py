@@ -73,7 +73,8 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(webui.summarize_artifact_status(job)[0], "error")
 
     def test_keyword_exception_marks_selected_frame_failed(self):
-        job = webui.Job("single", ["video.mp4"], True, True, keywords=["test"])
+        job = webui.Job("single", ["video.mp4"], True, True, keywords=["test"],
+                        auto_pdf=False)   # 本测试聚焦锁帧失败，不起真实 PDF 子进程
         job.results = [self.result()]
         with mock.patch.object(webui, "keyword_lock_frames", side_effect=RuntimeError("test failure")):
             webui.run_postprocess(job)

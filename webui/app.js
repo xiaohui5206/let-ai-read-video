@@ -296,8 +296,10 @@
   // ================= U04 设置联动 + localStorage 偏好（T01：仅存偏好） =================
   var kwEnabled = $("kw-enabled"), kwInput = $("kw-input");
   var dedupEnabled = $("dedup-enabled"), dedupSlider = $("dedup-threshold");
+  var autoPdf = $("auto-pdf");
   function keywordRequested() { return kwEnabled.checked && !!kwInput.value.trim(); }
   function currentRule() { return document.querySelector('input[name="frame-rule"]:checked').value; }
+  function currentModel() { return document.querySelector('input[name="model"]:checked').value; }
   kwEnabled.addEventListener("change", function () {
     kwInput.disabled = !kwEnabled.checked;
     fieldErr("err-kw", "");
@@ -320,6 +322,10 @@
       savePrefs();
     });
   });
+  document.querySelectorAll('input[name="model"]').forEach(function (r) {
+    r.addEventListener("change", function () { savePrefs(); });
+  });
+  autoPdf.addEventListener("change", function () { savePrefs(); });
   dedupSlider.addEventListener("input", function () {
     $("dedup-val").textContent = dedupSlider.value + "%";
     updateSummary();
@@ -352,6 +358,7 @@
         source: currentSource, tab: currentTab, rule: currentRule(),
         frame_count: $("frame-count").value, frame_interval: $("frame-interval").value,
         frame_width: $("frame-width").value,
+        model: currentModel(), auto_pdf: autoPdf.checked,
         kw_on: kwEnabled.checked, kw: kwInput.value,
         dedup_on: dedupEnabled.checked, dedup_t: dedupSlider.value
       }));
@@ -373,6 +380,11 @@
     if (p.frame_count) $("frame-count").value = p.frame_count;
     if (p.frame_interval) $("frame-interval").value = p.frame_interval;
     if (["512", "768", "1024"].indexOf(String(p.frame_width)) >= 0) $("frame-width").value = p.frame_width;
+    // 直接置 checked，不用 click()：避免恢复中途触发 change 事件覆盖存储值
+    if (["tiny", "small", "medium"].indexOf(String(p.model)) >= 0) {
+      document.querySelector('input[name="model"][value="' + p.model + '"]').checked = true;
+    }
+    if (typeof p.auto_pdf === "boolean") autoPdf.checked = p.auto_pdf;
     if (typeof p.kw === "string") kwInput.value = p.kw;
     if (p.kw_on) { kwEnabled.checked = true; kwInput.disabled = false; }
     if (p.dedup_on) { dedupEnabled.checked = true; dedupSlider.disabled = false; }
@@ -474,7 +486,11 @@
       payload.urls = $("batch-urls").value.split(/\r?\n/)
         .map(function (s) { return s.trim(); }).filter(function (s) { return s; });
     }
-    if (!payload.want_frames) return payload;
+    // 转写模型只影响文字稿：纯关键帧任务不带 model（对称于纯文字稿不带帧参数）
+    if (!payload.want_frames) {
+      if (payload.want_transcript) payload.model = currentModel();
+      return payload;
+    }
     var rule = currentRule();
     payload.frame_rule = { type: rule };
     payload.frame_width = Number($("frame-width").value);
@@ -484,8 +500,11 @@
       payload.keyword = kwInput.value.trim();
       if (payload.keyword && !payload.want_transcript) payload.want_transcript = true;
     }
+    // 关键字定位会自动补选文字稿，model 的判断必须放在补选之后
+    if (payload.want_transcript) payload.model = currentModel();
     payload.dedup = { enabled: dedupEnabled.checked,
                       threshold: parseInt(dedupSlider.value, 10) / 100 };
+    payload.auto_pdf = autoPdf.checked;
     return payload;
   }
 

@@ -15,12 +15,47 @@ function load(name, context) {
 let cases = 0;
 const payloadContext = {
   currentSource: 'file', cleanPath: x => x.trim(), $: () => ({value:' test.mp4 '}),
+  currentModel: () => 'medium',
   currentRule: () => { throw new Error('纯文字稿不应读取抽帧设置'); }
 };
 const payload = load('buildPayload', payloadContext)('transcript');
 assert.equal(payload.url, 'test.mp4');
 assert.equal(payload.want_frames, false);
 assert.equal(payload.keyword, undefined);
+assert.equal(payload.model, 'medium', '文字稿任务必须带转写模型');
+cases++;
+
+// v2.1.0：纯关键帧不带 model（对称于纯文字稿不带帧参数），auto_pdf 跟随复选框
+const framesContext = {
+  currentSource: 'file', cleanPath: x => x.trim(),
+  $: id => ({value: id === 'frame-width' ? '768' : ''}),
+  currentModel: () => { throw new Error('纯关键帧不应读取转写模型'); },
+  currentRule: () => 'default',
+  kwEnabled: {checked: false}, kwInput: {value: ''},
+  dedupEnabled: {checked: false}, dedupSlider: {value: '95'},
+  autoPdf: {checked: false}
+};
+const framesPayload = load('buildPayload', framesContext)('frames');
+assert.equal(framesPayload.want_transcript, false);
+assert.equal(framesPayload.model, undefined);
+assert.equal(framesPayload.auto_pdf, false);
+assert.equal(framesPayload.frame_width, 768);
+cases++;
+
+// v2.1.0：同时生成带 model，auto_pdf 默认勾选
+const bothContext = Object.assign({}, framesContext,
+  {currentModel: () => 'tiny', autoPdf: {checked: true}});
+const bothPayload = load('buildPayload', bothContext)('both');
+assert.equal(bothPayload.model, 'tiny');
+assert.equal(bothPayload.auto_pdf, true);
+cases++;
+
+// v2.1.0：关键字定位自动补选文字稿后仍带上 model（model 判断在补选之后）
+const kwContext = Object.assign({}, framesContext,
+  {currentModel: () => 'small', kwEnabled: {checked: true}, kwInput: {value: 'AI'}});
+const kwPayload = load('buildPayload', kwContext)('frames');
+assert.equal(kwPayload.want_transcript, true, '关键字定位必须补选文字稿');
+assert.equal(kwPayload.model, 'small');
 cases++;
 
 let submitted;

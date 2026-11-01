@@ -22,6 +22,35 @@ Format follows Keep a Changelog; versioning follows SemVer.
 - 间隔/关键词/去重后处理支持取消，修复进程注册竞态与取消被覆盖成完成的问题。
 - 新增 10 项 Python、4 项 JS 回归及 2 项真实恢复/重启断言；详见 `docs/FOLLOWUP_REVIEW.md`。
 
+## [2.1.0] - 2026-10-20
+
+### 新增 / Added
+- **界面「转写模型」三档**（README13 P0-1）：快速 tiny / 均衡 small（默认）/
+  精准 medium，前后端贯通到 `watch.py --model`；**仅影响文字稿转写质量，与
+  关键帧无关**（纯关键帧任务不透传 model）。界面提示首次选用未缓存模型会
+  自动下载权重（tiny 75MB / small 465MB / medium 1.5GB），选择经
+  localStorage 持久化；环境状态面板可查看各档缓存情况。
+- **PDF 从手动可选变为默认自动产出**：含关键帧的任务完成后自动导出
+  `关键帧.pdf`（默认每页 6 帧），侧栏「完成后自动导出 PDF」复选框可关
+  （默认勾选，偏好持久化）；导出失败只记日志、不设置 frames_error、不影响
+  任务状态，结果卡片上的「导出PDF」仍可手动换版式重导。frames 通道的
+  「整理结果…」中间态覆盖到 PDF 导完再 100%。
+- **中文友好产物带视频标题命名**：`<标题>_文字稿.txt` / `<标题>_文字稿.srt` /
+  `<标题>_关键帧/` / `<标题>_关键帧.pdf`（标题取 manifest.json，清洗口径与
+  run 目录命名一致、复用 `common.slugify`，截断 ≤50 字符；多P 每集用各自
+  标题）。原始 `transcript.txt/srt/json` 与 `frames/` 不动；PDF 改名在
+  webui 层导出后完成（自动导出与手动端点都生效），不改 CLI 脚本。
+  取不到标题时沿用旧通用名；旧任务的老名字副本仍可识别回退（去重恢复
+  补拷、预览与下载链接不受影响）。
+
+### 测试 / Tests
+- 新增 `tests/test_webui_v210.py`：model 校验（非法值/类型拒绝、三档通过）、
+  `build_watch_command` 仅在 want_transcript 时含 `--model`、auto_pdf 缺省
+  True 与非 bool 拒绝、`run_postprocess` 自动导出触发与失败不影响任务状态、
+  副本/PDF 标题命名（清洗/截断/多P 各自标题）与旧通用名回退。
+- `tests/test_webui_frontend.js` 同步扩充 payload 构建断言（model 携带规则、
+  auto_pdf 跟随复选框、关键字补选文字稿后仍带 model）。
+
 ## [2.0.0] - 2026-10-07
 
 本地源码版本；未创建远程 Release。与历史 v1.2.0 的功能差异见 `docs/VERSION_NOTES.md`。

@@ -140,6 +140,18 @@
   <aside class="settings" aria-label="生成设置">
     <button class="settings-toggle" id="settings-toggle" aria-expanded="false">生成设置 ▾</button>
     <div class="settings-body" id="settings-body">
+      <section class="card">
+        <h2>转写模型（仅影响文字稿）</h2>
+        <div class="field">
+          <label><input type="radio" name="model" value="tiny"> 快速 tiny
+            <span class="hint">（最快，错字较多）</span></label>
+          <label><input type="radio" name="model" value="small" checked> 均衡 small
+            <span class="hint">（默认，质量/速度平衡）</span></label>
+          <label><input type="radio" name="model" value="medium"> 精准 medium
+            <span class="hint">（更准，耗时更长）</span></label>
+          <div class="hint">仅影响文字稿转写质量，与关键帧无关；首次选用未缓存的模型会自动下载权重（tiny 75MB / small 465MB / medium 1.5GB）</div>
+        </div>
+      </section>
       <p class="hint">以下设置仅用于生成关键帧；单独生成文字稿时不会应用。</p>
       <section class="card">
         <h2>关键帧截取原则</h2>
@@ -162,6 +174,10 @@
             <option value="1024">1024 px · 阅读文字</option>
           </select>
           <div class="hint">宽度越大，图片和 PDF 越清晰，处理时间与文件体积也会增加。</div>
+        </div>
+        <div class="field">
+          <label for="auto-pdf"><input type="checkbox" id="auto-pdf" checked> 完成后自动导出 PDF（关键帧.pdf）</label>
+          <div class="hint">默认每页 6 帧；导出失败不影响任务。结果卡片上的「导出PDF」仍可手动换版式重导。</div>
         </div>
       </section>
       <section class="card">

@@ -2,6 +2,20 @@
 
 把 B站视频（链接 / 本地文件 / 客户端缓存）在本机处理成**带时间戳的文字稿 + 关键帧 + 可导出的 PDF**。浏览器里点按钮即可完成，**不需要 AI Agent，数据不出机**。
 
+> **v2.1.0 更新（2026-10-20）**
+> - 界面新增**转写模型**三档：快速 tiny / 均衡 small（默认）/ 精准 medium——仅影响文字稿质量，与关键帧无关；首次选用未缓存的模型会自动下载权重（75MB / 465MB / 1.5GB）
+>
+> **特别注意（模型档位与网络）**：新档位**初次使用必须联网下载模型权重**，网络连不上 HuggingFace 时转写会失败（报 `ConnectTimeout` / `LocalEntryNotFoundError`），切换回已缓存的 small 档不受影响。国内用户可先在命令行设置镜像再启动/重试（CMD：`set HF_ENDPOINT=https://hf-mirror.com` 和 `set HF_HUB_DISABLE_XET=1`），下载一次后永久离线可用；详见 [references/engines.md](references/engines.md)。
+> - 关键帧 **PDF 改为默认自动产出**（设置栏可关），手动「导出PDF」按钮保留，可随时换版式重导
+> - 中文产物命名带视频标题：`视频标题_文字稿.txt`、`视频标题_关键帧/`、`视频标题_关键帧.pdf`，批量产出好辨认（历史任务的老名字不受影响）
+>
+> **老用户升级（v2.0.0 → v2.1.0，不用重装环境）**
+> 1. 补丁位置：本仓库 **Releases → v2.1.0 → Assets（资产列表）**，下载其中的 **`v2.1.0-patch.zip`**（与完整包 `release.zip` 并列，别下错）。
+> 2. 关闭正在运行的 Web UI，把补丁 zip **先解压**，再进入解压后的文件夹，把里面全部内容**按目录结构复制到项目根目录**——就是含 `启动WebUI.bat`、`scripts/`、`webui/` 的那一层，提示重复选「全部替换」。
+> 3. 双击 `启动WebUI.bat` 即完成升级。历史产物、环境组件、个人设置均不受影响；旧任务的老文件名仍可正常查看。
+>
+> **新用户**：直接下载 Releases 里 v2.1.0 的完整包（已含上述更新），无需再打补丁。
+
 *Give any AI agent the ability to truly watch videos — local media preprocessing, zero external audio/video APIs. One command turns a video into a timestamped transcript + keyframes. v2.0 adds a local Web UI so no agent is needed.*
 
 ---
@@ -43,11 +57,11 @@ python scripts/setup.py --check                # 随时体检，看还缺什么
 
 **任务管理**：重型任务全局排队、可取消；刷新/重启不丢历史（重启后未完成任务如实标记"已中断"）；产物文件被移动会提示"文件不可用"并保留重试入口。
 
-**阅读与导出**：文字稿阅读区（搜索高亮、点时间戳跳到最近关键帧、复制、下载 TXT/SRT）；关键帧大图查看（方向键切换）；结果卡片一键导出带时间标识的 `关键帧.pdf`（每页 1/2/6 帧可选）。
+**阅读与导出**：文字稿阅读区（搜索高亮、点时间戳跳到最近关键帧、复制、下载 TXT/SRT）；关键帧大图查看（方向键切换）；关键帧 PDF 默认完成后自动导出，结果卡片也可手动导出并换版式（每页 1/2/6 帧可选）。
 
 ## 产物
 
-每次任务落在 `runs/<视频标题>_<时间戳>/`：`文字稿.txt`、`文字稿.srt`、`关键帧/`、`关键帧.pdf`（导出后），以及 `transcript.json` / `frames.json` / `manifest.json` 等结构化数据。
+每次任务落在 `runs/<视频标题>_<时间戳>/`：`<标题>_文字稿.txt`、`<标题>_文字稿.srt`、`<标题>_关键帧/`、`<标题>_关键帧.pdf`，以及 `transcript.json` / `frames.json` / `manifest.json` 等结构化数据（原始英文名产物始终保留，供 AI 工作流引用）。
 
 ## 隐私与合规
 

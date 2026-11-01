@@ -60,7 +60,7 @@ class FollowupTests(unittest.TestCase):
             fj.write_text('[{"file":"frame.jpg"}]', encoding="utf-8")
             return {"ok": True, "run_dir": str(run), "frames_json":str(fj), "frame_count":1}, ""
 
-        job = webui.Job("batch", urls, False, True)
+        job = webui.Job("batch", urls, False, True, auto_pdf=False)   # 不起真实 PDF 子进程
         with mock.patch.object(webui, "_run_watch_attempt", side_effect=watch):
             webui.run_job(job)
         self.assertEqual(job.status, "done")
